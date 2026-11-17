@@ -1,11 +1,11 @@
 # ============================================================
-# WorldwideHiringBot - FINAL VERSION
+# WorldwideHiringBot - FINAL VERSION - RENDER FREE WEB SERVICE
 # Channel: @RemoteJobsHiringNow | Admin: @dantez4u
 # Bot: @WorldwideHiringBot
 # Features: Services Stars, Bundles, Daily Ad, Jobs Poster,
 # Scam Check 15 Stars / FREE 1x per 15 days with Share-to-5,
 # Posting via Admin ONLY, Permanent Memory SQLite
-# Deploy: Render Free - worker: python bot.py
+# Deploy: Render Free Web Service - Start: python bot.py
 # ============================================================
 
 import os
@@ -16,6 +16,8 @@ import logging
 import time
 import asyncio
 from datetime import datetime, timezone, timedelta
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
@@ -67,6 +69,26 @@ BUNDLES = {
     "allin": {"name": "ALL-IN Bundle", "price": 1847, "desc": "Everything: CV + Cover + LinkedIn + Interview + Roadmap + Salary."},
     "freelancer": {"name": "FREELANCER Bundle", "price": 1000, "desc": "CV + LinkedIn + Roadmap for freelancers."},
 }
+
+# ---------------- KEEP-ALIVE FOR RENDER FREE WEB SERVICE ----------------
+# Render Web Service Free needs an open HTTP port, otherwise it thinks bot crashed.
+# This tiny server answers "Bot is alive!" - it does NOT affect Telegram bot.
+class KeepAliveHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is alive! WorldwideHiringBot running.")
+    def log_message(self, format, *args):
+        pass
+
+def run_keep_alive():
+    port = int(os.getenv("PORT", "10000"))
+    try:
+        logger.info(f"Keep-alive web server on port {port}")
+        HTTPServer(("0.0.0.0", port), KeepAliveHandler).serve_forever()
+    except Exception as e:
+        logger.error(f"Keep alive error: {e}")
 
 # ---------------- DATABASE ----------------
 def db():
@@ -611,14 +633,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if not text:
         return
-    # Anti-spam: 2 seconds
     now = time.time()
     if user.id in _last_msg and now - _last_msg[user.id] < 2:
         return
     _last_msg[user.id] = now
     save_chat(user.id, user.username, "user", text)
 
-    # 1. FREE CLAIM PROOF
     if context.user_data.get("awaiting_scam_proof"):
         try:
             c = db()
@@ -642,7 +662,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("❌ Reject", callback_data=f"reject_free:{rid}")]
         ])
         await notify_admin(context, f"🎁 FREE SCAM CLAIM #{rid}\nUser: @{user.username} ({user.id})\nProof: {text[:500]}\n\nCheck proof. Approve?")
-        # Also send approve buttons directly - notify_admin sends text only, so send buttons separately if admin known
         aid = get_admin_id()
         if aid:
             try:
@@ -651,12 +670,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         return
 
-    # 2. SCAM CHECK
     if context.user_data.get("awaiting_scam"):
         context.user_data["awaiting_scam"] = False
         was_paid = context.user_data.get("scam_paid")
         context.user_data.pop("scam_paid", None)
-        # Use FREE credit if not paid
         if not was_paid and get_credits(user.id) > 0:
             use_credit(user.id)
         result = run_scam_check(text)
@@ -674,7 +691,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_chat(user.id, user.username, "bot", result)
         return
 
-    # 3. DETAILS AFTER SERVICE PAYMENT
     if context.user_data.get("awaiting_details"):
         item = context.user_data.pop("awaiting_details")
         await update.message.reply_text(
@@ -887,6 +903,8 @@ async def ad_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------- MAIN ----------------
 def main():
     init_db()
+    # Start keep-alive FIRST - Render needs port open immediately
+    Thread(target=run_keep_alive, daemon=True).start()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
