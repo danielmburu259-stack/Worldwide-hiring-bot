@@ -52,8 +52,8 @@ _last_msg: dict = {}
 
 SCAM_PRICE = 15
 FREE_COOLDOWN_DAYS = 15
-# NEW: Explain Stars so users understand what ⭐ means
-STARS_HELP = "⭐ = Telegram Stars. Stars are Telegram's money. You buy Stars inside Telegram with Card / M-Pesa / Apple Pay, then you pay here with Stars. You do NOT send M-Pesa to anyone."
+# GLOBAL - NO M-PESA. Users worldwide.
+STARS_HELP = "⭐ = Telegram Stars. Stars are Telegram's money. You buy Stars inside Telegram with Card / Apple Pay / Google Pay, then you pay here with Stars. You do NOT send money to anyone directly."
 
 SERVICES = {
     "cv": {"name": "ATS CV Rewrite", "price": 385, "desc": "ATS CV rewritten for remote jobs worldwide. Send your old CV."},
@@ -73,8 +73,6 @@ BUNDLES = {
 }
 
 # ---------------- KEEP-ALIVE FOR RENDER FREE WEB SERVICE ----------------
-# Render Web Service Free needs an open HTTP port, otherwise it thinks bot crashed.
-# This tiny server answers "Bot is alive!" - it does NOT affect Telegram bot.
 class KeepAliveHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -118,7 +116,6 @@ def init_db():
     c.execute("""CREATE TABLE IF NOT EXISTS daily_stats (
         date TEXT PRIMARY KEY, ad_posted INTEGER DEFAULT 0, posted_at TEXT)""")
     c.execute("""CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)""")
-    # Scam FREE system
     c.execute("""CREATE TABLE IF NOT EXISTS scam_free (
         user_id INTEGER PRIMARY KEY, last_free_at TEXT,
         last_proof_status TEXT, free_count INTEGER DEFAULT 0)""")
@@ -300,6 +297,73 @@ def scam_menu_kb(user_id: int):
     ])
     return free_text, kb
 
+# ---------------- SHARED DETAIL SENDER - Used by BOTH buttons and Menu commands ----------------
+def detail_buttons(kind, key, user):
+    item = SERVICES.get(key) if kind == "buy" else BUNDLES.get(key) if kind == "bundle" else None
+    if not item:
+        return None, None, None
+    text = f"<b>{item['name']} - {item['price']}⭐</b>\n\n{item['desc']}\n\n{STARS_HELP}\n\nPay with Stars below. After payment, send your details here. Admin @dantez4u will deliver."
+    buttons = [[InlineKeyboardButton(f"⭐ Pay {item['price']} Stars", callback_data=f"pay:{kind}:{key}")]]
+    if is_admin(user):
+        buttons.append([InlineKeyboardButton("🧪 TEST FREE - Admin Only (0⭐)", callback_data=f"admintest:{kind}:{key}")])
+        text += "\n\n🧪 <b>Admin Test:</b> Tap TEST FREE below to test this service without paying. Only you see this button."
+    buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="menu")])
+    return text, InlineKeyboardMarkup(buttons), item
+
+async def send_detail_as_message(update, kind, key):
+    user = update.effective_user
+    save_user(user)
+    text, kb, item = detail_buttons(kind, key, user)
+    if not item:
+        await update.message.reply_text("Service not found. Use /start.")
+        return
+    await update.message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+# ---------------- MENU COMMANDS - These make the bottom-left ☰ Menu work ----------------
+# Each /command does the SAME as tapping the button. This was missing before.
+async def cmd_cv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_detail_as_message(update, "buy", "cv")
+async def cmd_cover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_detail_as_message(update, "buy", "cover")
+async def cmd_linkedin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_detail_as_message(update, "buy", "linkedin")
+async def cmd_interview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_detail_as_message(update, "buy", "interview")
+async def cmd_roadmap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_detail_as_message(update, "buy", "roadmap")
+async def cmd_salary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_detail_as_message(update, "buy", "salary")
+async def cmd_bundles(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    save_user(user)
+    btns = [[InlineKeyboardButton(f"{s['name']} - {s['price']}⭐", callback_data=f"detail:bundle:{k}")] for k, s in BUNDLES.items()]
+    btns.append([InlineKeyboardButton("⬅️ Back", callback_data="menu")])
+    await update.message.reply_text(f"📦 <b>Bundles - Save Stars</b>\nTap a bundle to see details & pay:\n\nℹ️ {STARS_HELP}", reply_markup=InlineKeyboardMarkup(btns), parse_mode=ParseMode.HTML)
+async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    save_user(user)
+    await update.message.reply_text(
+        "⭐ <b>Want YOUR Thing Posted In Channel?</b>\n\nWe post for:\n💼 <b>Freelancers</b> - Your skill / service\n🔍 <b>Job Seekers</b> - You looking for a job\n📢 <b>Hiring People / Companies</b> - You hiring someone\n\n<b>How it works - ONLY via Admin:</b>\n1. DM Admin @dantez4u\n2. Tell him what you want posted\n3. Pay as he tells you\n4. Admin posts it to @RemoteJobsHiringNow\n\n⚠️ Never pay to get a job - this is only if YOU want to advertise.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👨‍💼 DM Admin @dantez4u Now", url="https://t.me/dantez4u")], [InlineKeyboardButton("⬅️ Back", callback_data="menu")]]),
+        parse_mode=ParseMode.HTML,
+    )
+async def cmd_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    save_user(user)
+    await update.message.reply_text(
+        "🎁 <b>Promo - 1 FREE Scam Check</b>\n\nShare @RemoteJobsHiringNow to 5 people/groups, send proof here, Admin approves, you get 1 FREE Scam Check (worth 15⭐).\n\nTap below to start:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎁 Claim FREE - Share to 5", callback_data="scam_free_claim")], [InlineKeyboardButton("🛡️ Scam Check", callback_data="scamcheck")], [InlineKeyboardButton("⬅️ Back", callback_data="menu")]]),
+        parse_mode=ParseMode.HTML,
+    )
+async def cmd_refund(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    save_user(user)
+    await update.message.reply_text(
+        "💳 <b>Refund Policy</b>\n\n• Stars payments are for a service, not for a job. We never promise you will get a job.\n• If we have NOT started your work yet, DM Admin @dantez4u - we will help.\n• If work has already started / delivered, no refund - you already got the work.\n• If you were charged by mistake, DM Admin @dantez4u with screenshot.\n\n⚠️ Never pay anyone to get a job.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👨‍💼 DM Admin @dantez4u", url="https://t.me/dantez4u")], [InlineKeyboardButton("⬅️ Back", callback_data="menu")]]),
+        parse_mode=ParseMode.HTML,
+    )
+
 # ---------------- BASIC HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -348,7 +412,6 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    # FIXED: was buy:cv (2 parts) -> detail_cb expected 3 parts and said Error. Now detail:buy:cv (3 parts)
     btns = [[InlineKeyboardButton(f"{s['name']} - {s['price']}⭐", callback_data=f"detail:buy:{k}")] for k, s in SERVICES.items()]
     btns.append([InlineKeyboardButton("⬅️ Back", callback_data="menu")])
     await q.edit_message_text(
@@ -359,7 +422,6 @@ async def show_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_bundles(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    # FIXED: same as services
     btns = [[InlineKeyboardButton(f"{s['name']} - {s['price']}⭐", callback_data=f"detail:bundle:{k}")] for k, s in BUNDLES.items()]
     btns.append([InlineKeyboardButton("⬅️ Back", callback_data="menu")])
     await q.edit_message_text(
@@ -379,7 +441,7 @@ async def post_my_thing_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>How it works - ONLY via Admin:</b>\n"
         "1. DM Admin @dantez4u\n"
         "2. Tell him what you want posted\n"
-        "3. Pay as he tells you (TRC20 / Wise / Stars)\n"
+        "3. Pay as he tells you\n"
         "4. Admin posts it to @RemoteJobsHiringNow\n\n"
         "⚠️ No free ads in group. Only paid posts via Admin get posted.\n"
         "⚠️ Never pay to get a job - this is only if YOU want to advertise.",
@@ -393,7 +455,6 @@ async def post_my_thing_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def detail_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    # FIXED: handles detail:buy:cv (new) AND buy:cv (old) so no Error anymore
     parts = q.data.split(":")
     try:
         if len(parts) == 3:
@@ -405,20 +466,12 @@ async def detail_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await q.edit_message_text("Error. Go back to menu.", reply_markup=main_kb())
         return
-    item = SERVICES.get(key) if kind == "buy" else BUNDLES.get(key) if kind == "bundle" else None
+    text, kb, item = detail_buttons(kind, key, q.from_user)
     if not item:
         await q.edit_message_text("Service not found.", reply_markup=main_kb())
         return
-    text = f"<b>{item['name']} - {item['price']}⭐</b>\n\n{item['desc']}\n\n{STARS_HELP}\n\nPay with Stars below. After payment, send your details here. Admin @dantez4u will deliver."
-    buttons = [[InlineKeyboardButton(f"⭐ Pay {item['price']} Stars", callback_data=f"pay:{kind}:{key}")]]
-    # ADMIN ONLY: TEST FREE button - other users never see this
-    if is_admin(q.from_user):
-        buttons.append([InlineKeyboardButton("🧪 TEST FREE - Admin Only (0⭐)", callback_data=f"admintest:{kind}:{key}")])
-        text += "\n\n🧪 <b>Admin Test:</b> Tap TEST FREE below to test this service without paying. Only you see this button."
-    buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="menu")])
-    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.HTML)
+    await q.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
-# NEW: Admin Test - no invoice, no Stars, same flow as paid user, only admin can use
 async def admin_test_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not is_admin(q.from_user):
@@ -524,7 +577,6 @@ async def success(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------- SCAM CHECK ----------------
 async def scamcheck_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     free_text, kb = scam_menu_kb(update.effective_user.id)
-    # Admin gets extra test button, others don't
     if is_admin(update.effective_user):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🧪 Admin Test FREE Scam Check", callback_data="admintest:buy:scam")],
@@ -645,7 +697,6 @@ async def approve_free_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.commit()
     c.close()
     add_credit(user_id)
-    # FIXED: Approve now immediately activates FREE check for that user, no extra click needed
     try:
         context.application.user_data[user_id]["awaiting_scam"] = True
         context.application.user_data[user_id]["scam_paid"] = False
@@ -996,15 +1047,13 @@ async def ad_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await daily_ad_job(context)
     await update.message.reply_text("✅ Daily Ad Posted (forced test).")
 
-# ---------------- MAIN - FIXED FOR PYTHON 3.14 ----------------
+# ---------------- MAIN ----------------
 def main():
-    # FIX for Python 3.14 - create event loop manually, otherwise run_polling crashes
     try:
         asyncio.set_event_loop(asyncio.new_event_loop())
     except Exception:
         pass
     init_db()
-    # Start keep-alive FIRST - Render needs port open immediately
     Thread(target=run_keep_alive, daemon=True).start()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -1015,6 +1064,17 @@ def main():
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("postnow", post_now))
     app.add_handler(CommandHandler("adnow", ad_now))
+    # NEW: Bottom-left ☰ Menu commands - these were missing, so Menu did nothing except /start
+    app.add_handler(CommandHandler("cv", cmd_cv))
+    app.add_handler(CommandHandler("cover", cmd_cover))
+    app.add_handler(CommandHandler("linkedin", cmd_linkedin))
+    app.add_handler(CommandHandler("interview", cmd_interview))
+    app.add_handler(CommandHandler("roadmap", cmd_roadmap))
+    app.add_handler(CommandHandler("salary", cmd_salary))
+    app.add_handler(CommandHandler("bundles", cmd_bundles))
+    app.add_handler(CommandHandler("advertise", cmd_advertise))
+    app.add_handler(CommandHandler("promo", cmd_promo))
+    app.add_handler(CommandHandler("refund", cmd_refund))
 
     app.add_handler(CallbackQueryHandler(cancel_cmd, pattern="^cancel$"))
     app.add_handler(CallbackQueryHandler(menu_cb, pattern="^menu$"))
@@ -1026,10 +1086,8 @@ def main():
     app.add_handler(CallbackQueryHandler(scam_free_claim_cb, pattern="^scam_free_claim$"))
     app.add_handler(CallbackQueryHandler(approve_free_cb, pattern="^approve_free:"))
     app.add_handler(CallbackQueryHandler(reject_free_cb, pattern="^reject_free:"))
-    # FIXED: detail now uses detail: prefix, plus old buy:/bundle: as fallback
     app.add_handler(CallbackQueryHandler(detail_cb, pattern="^detail:"))
     app.add_handler(CallbackQueryHandler(detail_cb, pattern="^(buy|bundle):"))
-    # NEW: Admin Test only
     app.add_handler(CallbackQueryHandler(admin_test_cb, pattern="^admintest:"))
     app.add_handler(CallbackQueryHandler(pay_cb, pattern="^pay:"))
 
@@ -1039,7 +1097,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     jq = app.job_queue
-    # NO BURST: wait before first auto-post, so redeploy does not flood channel
     jq.run_repeating(post_jobs_job, interval=timedelta(hours=4), first=timedelta(hours=4))
     jq.run_repeating(daily_ad_job, interval=timedelta(hours=24), first=timedelta(hours=2))
 
