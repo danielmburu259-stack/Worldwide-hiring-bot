@@ -900,8 +900,13 @@ async def ad_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await daily_ad_job(context)
     await update.message.reply_text("✅ Daily Ad Posted (forced test).")
 
-# ---------------- MAIN ----------------
+# ---------------- MAIN - FIXED FOR PYTHON 3.14 ----------------
 def main():
+    # FIX for Python 3.14 - create event loop manually, otherwise run_polling crashes
+    try:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+    except Exception:
+        pass
     init_db()
     # Start keep-alive FIRST - Render needs port open immediately
     Thread(target=run_keep_alive, daemon=True).start()
