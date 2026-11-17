@@ -52,6 +52,8 @@ _last_msg: dict = {}
 
 SCAM_PRICE = 15
 FREE_COOLDOWN_DAYS = 15
+# NEW: Explain Stars so users understand what ⭐ means
+STARS_HELP = "⭐ = Telegram Stars. Stars are Telegram's money. You buy Stars inside Telegram with Card / M-Pesa / Apple Pay, then you pay here with Stars. You do NOT send M-Pesa to anyone."
 
 SERVICES = {
     "cv": {"name": "ATS CV Rewrite", "price": 385, "desc": "ATS CV rewritten for remote jobs worldwide. Send your old CV."},
@@ -219,6 +221,7 @@ def clear_user_state(context):
     context.user_data.pop("awaiting_scam_proof", None)
     context.user_data.pop("awaiting_details", None)
     context.user_data.pop("scam_paid", None)
+    context.user_data.pop("admin_test", None)
 
 # ---------------- SCAM FREE HELPERS ----------------
 def can_claim_free(user_id: int):
@@ -303,6 +306,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(user)
     clear_user_state(context)
     save_chat(user.id, user.username, "user", "/start")
+    extra = "\n\n🧪 <b>Admin Test Mode ON for you:</b> You can test all services FREE - you will see a TEST FREE button on each service. Other users don't see it." if is_admin(user) else ""
     text = (
         f"👋 Hi {html.escape(user.first_name or 'there')}!\n\n"
         "🌍 <b>Remote Jobs Worldwide Only. No US-only.</b>\n"
@@ -314,6 +318,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⭐ <b>Want YOUR thing posted?</b>\n"
         "Freelancer skill, Job Seeker, Hiring - Contact Admin @dantez4u to post it in channel.\n\n"
         "📦 Bundles: 539 / 1154 / 1847 / 1000\n\n"
+        f"ℹ️ {STARS_HELP}{extra}\n\n"
         "⚠️ <b>Never pay to get a job.</b> I remember you - chats & orders saved."
     )
     await update.message.reply_text(text, reply_markup=main_kb(), parse_mode=ParseMode.HTML)
@@ -324,7 +329,10 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         q = update.callback_query
         await q.answer("Cancelled")
-        await q.edit_message_text("❌ Cancelled. Back to menu:", reply_markup=main_kb())
+        try:
+            await q.edit_message_text("❌ Cancelled. Back to menu:", reply_markup=main_kb())
+        except Exception:
+            await q.message.reply_text("❌ Cancelled. Back to menu:", reply_markup=main_kb())
     else:
         await update.message.reply_text("❌ Cancelled. Back to menu:", reply_markup=main_kb())
 
@@ -332,25 +340,30 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     clear_user_state(context)
-    await q.edit_message_text("🌍 <b>Main Menu - Worldwide Hiring</b>\nChoose below:", reply_markup=main_kb(), parse_mode=ParseMode.HTML)
+    try:
+        await q.edit_message_text("🌍 <b>Main Menu - Worldwide Hiring</b>\nChoose below:", reply_markup=main_kb(), parse_mode=ParseMode.HTML)
+    except Exception:
+        await q.message.reply_text("🌍 <b>Main Menu</b>", reply_markup=main_kb(), parse_mode=ParseMode.HTML)
 
 async def show_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    btns = [[InlineKeyboardButton(f"{s['name']} - {s['price']}⭐", callback_data=f"buy:{k}")] for k, s in SERVICES.items()]
+    # FIXED: was buy:cv (2 parts) -> detail_cb expected 3 parts and said Error. Now detail:buy:cv (3 parts)
+    btns = [[InlineKeyboardButton(f"{s['name']} - {s['price']}⭐", callback_data=f"detail:buy:{k}")] for k, s in SERVICES.items()]
     btns.append([InlineKeyboardButton("⬅️ Back", callback_data="menu")])
     await q.edit_message_text(
-        "💼 <b>Services - Stars ONLY</b>\nTap a service to see details & pay:",
+        f"💼 <b>Services - Stars ONLY</b>\nTap a service to see details & pay:\n\nℹ️ {STARS_HELP}",
         reply_markup=InlineKeyboardMarkup(btns), parse_mode=ParseMode.HTML,
     )
 
 async def show_bundles(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    btns = [[InlineKeyboardButton(f"{s['name']} - {s['price']}⭐", callback_data=f"bundle:{k}")] for k, s in BUNDLES.items()]
+    # FIXED: same as services
+    btns = [[InlineKeyboardButton(f"{s['name']} - {s['price']}⭐", callback_data=f"detail:bundle:{k}")] for k, s in BUNDLES.items()]
     btns.append([InlineKeyboardButton("⬅️ Back", callback_data="menu")])
     await q.edit_message_text(
-        "📦 <b>Bundles - Save Stars</b>\nTap a bundle to see details & pay:",
+        f"📦 <b>Bundles - Save Stars</b>\nTap a bundle to see details & pay:\n\nℹ️ {STARS_HELP}",
         reply_markup=InlineKeyboardMarkup(btns), parse_mode=ParseMode.HTML,
     )
 
@@ -380,8 +393,15 @@ async def post_my_thing_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def detail_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    # FIXED: handles detail:buy:cv (new) AND buy:cv (old) so no Error anymore
+    parts = q.data.split(":")
     try:
-        _, kind, key = q.data.split(":")
+        if len(parts) == 3:
+            _, kind, key = parts
+        elif len(parts) == 2:
+            kind, key = parts[0], parts[1]
+        else:
+            raise ValueError
     except ValueError:
         await q.edit_message_text("Error. Go back to menu.", reply_markup=main_kb())
         return
@@ -389,12 +409,47 @@ async def detail_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not item:
         await q.edit_message_text("Service not found.", reply_markup=main_kb())
         return
-    text = f"<b>{item['name']} - {item['price']}⭐</b>\n\n{item['desc']}\n\nPay with Stars below. After payment, send your details here. Admin @dantez4u will deliver."
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"⭐ Pay {item['price']} Stars", callback_data=f"pay:{kind}:{key}")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="menu")],
-    ])
-    await q.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    text = f"<b>{item['name']} - {item['price']}⭐</b>\n\n{item['desc']}\n\n{STARS_HELP}\n\nPay with Stars below. After payment, send your details here. Admin @dantez4u will deliver."
+    buttons = [[InlineKeyboardButton(f"⭐ Pay {item['price']} Stars", callback_data=f"pay:{kind}:{key}")]]
+    # ADMIN ONLY: TEST FREE button - other users never see this
+    if is_admin(q.from_user):
+        buttons.append([InlineKeyboardButton("🧪 TEST FREE - Admin Only (0⭐)", callback_data=f"admintest:{kind}:{key}")])
+        text += "\n\n🧪 <b>Admin Test:</b> Tap TEST FREE below to test this service without paying. Only you see this button."
+    buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="menu")])
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=ParseMode.HTML)
+
+# NEW: Admin Test - no invoice, no Stars, same flow as paid user, only admin can use
+async def admin_test_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not is_admin(q.from_user):
+        await q.answer("Admin only", show_alert=True)
+        return
+    await q.answer()
+    try:
+        _, kind, key = q.data.split(":")
+    except ValueError:
+        return
+    item = SERVICES.get(key) if kind == "buy" else BUNDLES.get(key) if kind == "bundle" else None
+    if not item:
+        await q.message.reply_text("Service not found.")
+        return
+    if key == "scam":
+        context.user_data["awaiting_scam"] = True
+        context.user_data["scam_paid"] = True
+        context.user_data["admin_test"] = True
+        await q.message.reply_text("🧪 <b>Admin Test Mode - Scam Check FREE</b>\n\nSend any job link / company now to test. No Stars, no sharing.", reply_markup=back_kb(), parse_mode=ParseMode.HTML)
+        return
+    payload = f"{kind}:{key}:{q.from_user.id}"
+    context.user_data["awaiting_details"] = payload
+    context.user_data["admin_test"] = True
+    try:
+        c = db()
+        c.execute("INSERT INTO orders (user_id, username, item, price, status, created_at, payload) VALUES (?,?,?,?,?,?,?)", (q.from_user.id, q.from_user.username or "", payload, 0, "ADMIN_TEST", datetime.now(timezone.utc).isoformat(), payload))
+        c.commit()
+        c.close()
+    except Exception:
+        pass
+    await q.message.reply_text(f"🧪 <b>Admin Test Mode - {item['name']} FREE</b>\n\nYou did NOT pay. This is test only.\n\nNow send your test details (CV / job link / etc) like a real buyer would. Bot will save it as ADMIN_TEST.", reply_markup=back_kb(), parse_mode=ParseMode.HTML)
 
 async def pay_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -423,7 +478,7 @@ async def pay_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             currency="XTR",
             prices=[LabeledPrice(item["name"], item["price"])],
         )
-        await q.message.reply_text("⭐ Invoice sent above. Tap Pay to pay with Stars.")
+        await q.message.reply_text(f"⭐ Invoice sent above. Tap Pay to pay with Stars.\n\n{STARS_HELP}")
     except Exception as e:
         logger.error(f"invoice: {e}")
         await q.message.reply_text("⚠️ Could not create invoice. Stars payments may not be enabled. Contact @dantez4u. Go to @BotFather > Payments > Enable Stars.")
@@ -469,11 +524,20 @@ async def success(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------- SCAM CHECK ----------------
 async def scamcheck_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     free_text, kb = scam_menu_kb(update.effective_user.id)
+    # Admin gets extra test button, others don't
+    if is_admin(update.effective_user):
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🧪 Admin Test FREE Scam Check", callback_data="admintest:buy:scam")],
+            [InlineKeyboardButton(f"⭐ Pay {SCAM_PRICE} Stars - Instant", callback_data="scam_pay")],
+            [InlineKeyboardButton("🎁 Claim FREE - Share to 5 People", callback_data="scam_free_claim")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="menu")],
+        ])
     await update.message.reply_text(
         f"🛡️ <b>Scam Check - Only {SCAM_PRICE}⭐</b>\n\n{free_text}\n\n"
         "<b>2 Ways:</b>\n"
         f"1. <b>Pay {SCAM_PRICE}⭐</b> - Instant, use daily, no sharing\n"
         f"2. <b>FREE 1x every {FREE_COOLDOWN_DAYS} days</b> - Share @RemoteJobsHiringNow to 5 people/groups, send proof, Admin approves, you get 1 FREE check\n\n"
+        f"{STARS_HELP}\n\n"
         "❌ Scam if: Asks you to pay to get job, asks bank / OTP, salary too high, Gmail / WhatsApp only.\n\nChoose:",
         reply_markup=kb, parse_mode=ParseMode.HTML,
     )
@@ -482,11 +546,18 @@ async def scamcheck_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     free_text, kb = scam_menu_kb(q.from_user.id)
+    if is_admin(q.from_user):
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🧪 Admin Test FREE Scam Check", callback_data="admintest:buy:scam")],
+            [InlineKeyboardButton(f"⭐ Pay {SCAM_PRICE} Stars - Instant", callback_data="scam_pay")],
+            [InlineKeyboardButton("🎁 Claim FREE - Share to 5 People", callback_data="scam_free_claim")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="menu")],
+        ])
     await q.edit_message_text(
         f"🛡️ <b>Scam Check - Only {SCAM_PRICE}⭐</b>\n\n{free_text}\n\n"
         "<b>2 Ways:</b>\n"
         f"1. Pay {SCAM_PRICE}⭐ - Instant, daily\n"
-        f"2. FREE 1x / {FREE_COOLDOWN_DAYS} days - Share to 5 people, send proof, Admin approves\n\nChoose:",
+        f"2. FREE 1x / {FREE_COOLDOWN_DAYS} days - Share to 5 people, send proof, Admin approves\n\n{STARS_HELP}\n\nChoose:",
         reply_markup=kb, parse_mode=ParseMode.HTML,
     )
 
@@ -503,7 +574,7 @@ async def scam_pay_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             currency="XTR",
             prices=[LabeledPrice("Scam Check", SCAM_PRICE)],
         )
-        await q.message.reply_text(f"⭐ Invoice for {SCAM_PRICE}⭐ sent above. Pay, then send the job link.")
+        await q.message.reply_text(f"⭐ Invoice for {SCAM_PRICE}⭐ sent above. Pay, then send the job link.\n\n{STARS_HELP}")
     except Exception as e:
         logger.error(f"scam invoice: {e}")
         await q.message.reply_text("⚠️ Could not create invoice. Contact @dantez4u.")
@@ -537,11 +608,14 @@ async def scam_free_claim_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "<b>Do this:</b>\n"
         "1. Open @RemoteJobsHiringNow\n"
         "2. Forward / Share any 5 job posts to 5 different people OR groups\n"
-        "3. Take 5 screenshots of your shares\n"
-        "4. Send the 5 screenshots HERE (or send text: 'Shared to: @name1, @name2...')\n\n"
-        "Admin @dantez4u will check & approve. Then you get 1 FREE Scam Check.\n"
+        "3. Take 5 screenshots of your shares\n\n"
+        "<b>4. Send the 5 screenshots HERE TO THIS BOT 👇</b>\n"
+        "Do NOT send to Admin directly. Send them HERE in this chat.\n"
+        "You can also send text: 'Shared to: @name1, @name2...'\n\n"
+        "⏳ After you send, bot will say 'PENDING for Admin approval'. Admin will check & Approve / Reject.\n"
+        "If Approved, you can immediately send your job for FREE check.\n"
         "⚠️ Fake proof = No free. Be honest.\n\n"
-        "Send your 5 proofs now:",
+        "Send your 5 proofs now HERE:",
         reply_markup=back_kb(), parse_mode=ParseMode.HTML,
     )
 
@@ -571,12 +645,19 @@ async def approve_free_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.commit()
     c.close()
     add_credit(user_id)
-    await q.edit_message_text(f"✅ Approved FREE for @{username} - 1 credit added.")
+    # FIXED: Approve now immediately activates FREE check for that user, no extra click needed
+    try:
+        context.application.user_data[user_id]["awaiting_scam"] = True
+        context.application.user_data[user_id]["scam_paid"] = False
+        context.application.user_data[user_id].pop("awaiting_scam_proof", None)
+    except Exception as e:
+        logger.error(f"approve set state: {e}")
+    await q.edit_message_text(f"✅ Approved FREE for @{username} - 1 FREE check activated.")
     try:
         await context.bot.send_message(
             chat_id=user_id,
-            text="🎉 Approved! You shared to 5 people - you got 1 FREE Scam Check!\n\nTap below to use it:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛡️ Use FREE Scam Check Now", callback_data="scamcheck")]]),
+            text="🎉 Approved! Your share proof was accepted.\n\n✅ Your 1 FREE Scam Check is now active.\n\n👉 Send your job link / company name NOW in this chat, and bot will check it for FREE.",
+            reply_markup=back_kb(),
         )
     except Exception:
         pass
@@ -606,7 +687,12 @@ async def reject_free_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_message(
             chat_id=user_id,
-            text=f"❌ Your FREE proof was not approved. Share to 5 real people/groups and try again, or pay {SCAM_PRICE}⭐ for instant check.",
+            text=f"❌ Rejected. Your share proof was not approved.\n\nYou can:\n1. Share to 5 real people/groups again and try again\n2. OR pay {SCAM_PRICE}⭐ for instant check - no sharing needed.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"⭐ Pay {SCAM_PRICE} Stars - Instant Check", callback_data="scam_pay")],
+                [InlineKeyboardButton("🎁 Try Share Again", callback_data="scam_free_claim")],
+                [InlineKeyboardButton("⬅️ Menu", callback_data="menu")],
+            ]),
         )
     except Exception:
         pass
@@ -654,7 +740,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data["awaiting_scam_proof"] = False
         await update.message.reply_text(
-            "✅ Proof received! Sent to Admin @dantez4u for review. You will get a message when approved. Thank you for sharing!",
+            "⏳ Proof received! Status: PENDING for Admin approval.\n\nPlease wait. Admin @dantez4u will Approve or Reject. You will get a message here when he decides.\nIf Approved, send your job link immediately for FREE check.",
             reply_markup=main_kb(),
         )
         kb = InlineKeyboardMarkup([
@@ -671,10 +757,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if context.user_data.get("awaiting_scam"):
+        is_test = context.user_data.get("admin_test")
         context.user_data["awaiting_scam"] = False
         was_paid = context.user_data.get("scam_paid")
         context.user_data.pop("scam_paid", None)
-        if not was_paid and get_credits(user.id) > 0:
+        context.user_data.pop("admin_test", None)
+        if not was_paid and not is_test and get_credits(user.id) > 0:
             use_credit(user.id)
         result = run_scam_check(text)
         try:
@@ -687,17 +775,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c.close()
         except Exception as e:
             logger.error(f"scam save: {e}")
-        await update.message.reply_text(result, reply_markup=main_kb())
+        prefix = "🧪 <b>Admin Test Result (FREE - you did not pay):</b>\n\n" if is_test else ""
+        await update.message.reply_text(prefix + result, reply_markup=main_kb(), parse_mode=ParseMode.HTML)
         save_chat(user.id, user.username, "bot", result)
         return
 
     if context.user_data.get("awaiting_details"):
         item = context.user_data.pop("awaiting_details")
-        await update.message.reply_text(
-            f"✅ Details received for {item}. Saved. Admin @dantez4u will deliver. Thank you!",
-            reply_markup=main_kb(),
-        )
-        await notify_admin(context, f"📄 DETAILS from @{user.username} ({user.id}) for {item}:\n{text[:1000]}")
+        is_test = context.user_data.pop("admin_test", None)
+        if is_test:
+            await update.message.reply_text(
+                f"🧪 <b>Admin Test Received (FREE):</b>\n\n{item}. Saved as ADMIN_TEST. This is how a real buyer flow looks.",
+                reply_markup=main_kb(), parse_mode=ParseMode.HTML,
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ Details received for {item}. Saved. Admin @dantez4u will deliver. Thank you!",
+                reply_markup=main_kb(),
+            )
+            await notify_admin(context, f"📄 DETAILS from @{user.username} ({user.id}) for {item}:\n{text[:1000]}")
         save_chat(user.id, user.username, "bot", "Details received")
         return
 
@@ -728,7 +824,7 @@ async def handle_photo_proof(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"photo proof save: {e}")
         return
     context.user_data["awaiting_scam_proof"] = False
-    await update.message.reply_text("✅ Photo proof received! Sent to Admin for review.", reply_markup=main_kb())
+    await update.message.reply_text("⏳ Photo proof received! Status: PENDING for Admin approval.\n\nPlease wait. Admin will Approve or Reject. You will get a message here.", reply_markup=main_kb())
     aid = get_admin_id()
     if aid:
         try:
@@ -930,7 +1026,11 @@ def main():
     app.add_handler(CallbackQueryHandler(scam_free_claim_cb, pattern="^scam_free_claim$"))
     app.add_handler(CallbackQueryHandler(approve_free_cb, pattern="^approve_free:"))
     app.add_handler(CallbackQueryHandler(reject_free_cb, pattern="^reject_free:"))
+    # FIXED: detail now uses detail: prefix, plus old buy:/bundle: as fallback
+    app.add_handler(CallbackQueryHandler(detail_cb, pattern="^detail:"))
     app.add_handler(CallbackQueryHandler(detail_cb, pattern="^(buy|bundle):"))
+    # NEW: Admin Test only
+    app.add_handler(CallbackQueryHandler(admin_test_cb, pattern="^admintest:"))
     app.add_handler(CallbackQueryHandler(pay_cb, pattern="^pay:"))
 
     app.add_handler(PreCheckoutQueryHandler(precheckout))
