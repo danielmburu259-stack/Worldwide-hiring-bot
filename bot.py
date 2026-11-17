@@ -939,8 +939,9 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     jq = app.job_queue
-    jq.run_repeating(post_jobs_job, interval=timedelta(hours=4), first=10)
-    jq.run_repeating(daily_ad_job, interval=timedelta(hours=24), first=60)
+    # NO BURST: wait before first auto-post, so redeploy does not flood channel
+    jq.run_repeating(post_jobs_job, interval=timedelta(hours=4), first=timedelta(hours=4))
+    jq.run_repeating(daily_ad_job, interval=timedelta(hours=24), first=timedelta(hours=2))
 
     logger.info("Bot starting...")
     app.run_polling()
