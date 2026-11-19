@@ -1,0 +1,24 @@
+name: Job Poster Every 5 Hours
+on:
+  schedule:
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - run: python bot.py
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      - name: Save memory
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@bot.com"
+          git add posted.json state.json || true
+          git commit -m "update memory" || true
+          git push || true
