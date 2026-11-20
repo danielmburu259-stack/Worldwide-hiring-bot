@@ -200,9 +200,10 @@ def clean_title_company(title, company, url):
     return t, c
 # --- END OF ONLY CHANGED FUNCTION ---
 
-# --- ONLY CHANGED PART STARTS HERE: Salary period ---
+# --- ONLY CHANGED PART STARTS HERE: Salary period + Tiny salary guard ---
 # Professional rule: return salary exactly as job states it, plus its period if job states it.
 # Never invent a period. If job says "$50,000" with no period, return "$50,000".
+# NEW: $3 alone is NOT a salary (it is "$3 million revenue" etc. in the description). Throw it away.
 def _find_period(text):
     if not text:
         return ""
@@ -242,18 +243,38 @@ def _find_period(text):
 def _has_period(text):
     return _find_period(text) != ""
 
+def _is_tiny_salary(salary_part, period):
+    # $3, $5, $9 with no period and no range = not a salary, it is a price / revenue mention.
+    # Keep: $25/hour (has period), $85k, $50,000, $50,000 - $58,000, $15 - $20/hour
+    if period:
+        return False
+    if "-" in salary_part or "–" in salary_part:
+        return False
+    if "k" in salary_part.lower():
+        return False
+    nums = re.findall(r"[\d,]+", salary_part)
+    if not nums:
+        return False
+    try:
+        val = float(nums[0].replace(",", ""))
+    except:
+        return False
+    # A real salary without period is at least $100 (e.g. $500 project). Below that, it is noise.
+    return val < 100
+
 def extract_salary(desc):
     if not desc:
         return ""
     # 1. $ amount with optional period right after it: "$50,000 - $58,000 per year" / "$25/hour" / "$2,000 monthly"
-    m = re.search(r"\$\s?[\d,]+(?:\s?[-–]\s?\$?\s?[\d,]+)?", desc, flags=re.I)
-    if m:
+    # Search ALL $ amounts, not just the first one - first one may be "$3 million" noise.
+    for m in re.finditer(r"\$\s?[\d,]+(?:\s?[-–]\s?\$?\s?[\d,]+)?", desc, flags=re.I):
         salary_part = m.group(0).strip()
-        # Period could be right after amount, or elsewhere in same description
         after = desc[m.end():m.end()+40]
         period = _find_period(after)
         if not period:
             period = _find_period(desc)
+        if _is_tiny_salary(salary_part, period):
+            continue
         if period:
             return f"{salary_part} {period}"
         return salary_part
@@ -265,11 +286,13 @@ def extract_salary(desc):
         period = _find_period(after)
         if not period:
             period = _find_period(desc)
+        if _is_tiny_salary(salary_part, period):
+            return ""
         if period:
             return f"{salary_part} {period}"
         return salary_part
     return ""
-# --- ONLY CHANGED PART ENDS HERE: Salary period ---
+# --- ONLY CHANGED PART ENDS HERE: Salary period + Tiny salary guard ---
 
 def extract_job_type(desc, title):
     text = ((title or "") + " " + (desc or "")).lower()
@@ -331,35 +354,66 @@ def is_worldwide(job):
         return True
     return False
 
-# --- ONLY CHANGED FUNCTION HERE: get_location_label - generic + USA/UK fix for lists ---
+# --- ONLY CHANGED FUNCTION HERE: get_location_label - fix "Only Us Only" ---
 # Say what the source platform says. Never invent Worldwide.
-# USA / Philippines were only examples. This works for ANY place.
-# FIX: "USA, Canada" must stay "USA, Canada", not "Usa, Canada".
-# We split on comma / " and " and fix each part separately, then re-join.
+# FIX 1: Source may already say "US Only" / "Philippines Only". Strip that trailing "Only" first,
+#        then add ONE "Only". Otherwise we get "Only Us Only".
+# FIX 2: Fix US / UK / USA inside ANY phrase, not just whole string.
+#        "Southeast US" -> "Southeast US", not "Southeast Us". "USA, Canada" -> "USA, Canada".
 def _format_place_list(raw):
-    # Split "USA, Canada" -> ["USA", "Canada"], "USA and Canada" -> ["USA", "Canada"]
-    # Keep the original separator for display: comma stays comma, " and " stays " and ".
-    parts = re.split(r"(\s*,\s*|\s+and\s+)", raw.strip())
+    # 1. Strip trailing " Only" if source already included it: "US Only" -> "US"
+    s = raw.strip()
+    s = re.sub(r"\s+only\s*$", "", s, flags=re.I).strip()
+    if not s:
+        return ""
+    # 2. Split on comma / " and ", keep separators.
+    parts = re.split(r"(\s*,\s*|\s+and\s+)", s)
     out = []
     for p in parts:
-        low = p.strip().lower()
-        if low in ("", ",", "and"):
+        stripped = p.strip()
+        low = stripped.lower()
+        if stripped == "" or low in (",", "and"):
             out.append(p)
             continue
-        if low in ("usa", "us", "u.s.", "u.s.a.", "united states"):
-            out.append("USA")
-        elif low in ("uk", "u.k.", "united kingdom"):
-            out.append("UK")
-        elif low in ("uae",):
-            out.append("UAE")
-        elif low in ("eu", "e.u."):
-            out.append("EU")
-        else:
-            out.append(p.strip().title())
-    # Re-join and clean double spaces
+        # 3. Fix each WORD inside the part: "southeast us" -> "Southeast US"
+        words = stripped.split()
+        fixed_words = []
+        for w in words:
+            lw = w.lower().strip(",")
+            if lw in ("usa", "us", "u.s.", "u.s.a.", "united"):
+                # "united" alone is handled below with next word, keep as-is for now
+                fixed_words.append(w)
+            else:
+                fixed_words.append(w)
+        # Rebuild, then fix known phrases / abbreviations as whole tokens.
+        rebuilt = " ".join(fixed_words)
+        # Token-level fix: replace whole words us/usa/uk/uae/eu, case-insensitive, keep other words Title-cased.
+        tokens = rebuilt.split()
+        final_tokens = []
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            low_tok = tok.lower().strip(",")
+            # "United States" -> "US", "United Kingdom" -> "UK"
+            if low_tok == "united" and i + 1 < len(tokens) and tokens[i+1].lower().strip(",") in ("states", "kingdom"):
+                nxt = tokens[i+1].lower().strip(",")
+                final_tokens.append("US" if nxt == "states" else "UK")
+                i += 2
+                continue
+            if low_tok in ("usa", "us", "u.s.", "u.s.a."):
+                final_tokens.append("USA")
+            elif low_tok in ("uk", "u.k."):
+                final_tokens.append("UK")
+            elif low_tok in ("uae",):
+                final_tokens.append("UAE")
+            elif low_tok in ("eu", "e.u."):
+                final_tokens.append("EU")
+            else:
+                final_tokens.append(tok.title())
+            i += 1
+        out.append(" ".join(final_tokens))
     joined = "".join(out)
     joined = re.sub(r"\s+", " ", joined).strip()
-    # Fix spacing around commas: "USA , Canada" -> "USA, Canada"
     joined = re.sub(r"\s*,\s*", ", ", joined)
     return joined
 
@@ -375,7 +429,8 @@ def get_location_label(job):
     # Skip only the non-place values: blank, "Remote", "Remote - Worldwide".
     if loc and loc_low not in ("", "remote", "remote - worldwide"):
         place = _format_place_list(loc)
-        return (f"Only {place}", f"Only {place} Can Apply")
+        if place:
+            return (f"Only {place}", f"Only {place} Can Apply")
     # 3. Location is just "Remote" but description clearly says "<Place> only" -> use that place.
     # Generic: any 1-2 word place, not a hard-coded country list.
     stopwords = {"candidates", "applicants", "remote", "online", "fully", "all", "those", "this", "that", "eligible", "qualified", "based", "located", "residing"}
@@ -385,7 +440,8 @@ def get_location_label(job):
         words = place_raw.split()
         if 1 <= len(words) <= 2 and all(w not in stopwords for w in words) and len(place_raw) <= 30:
             place = _format_place_list(place_raw)
-            return (f"Only {place}", f"Only {place} Can Apply")
+            if place:
+                return (f"Only {place}", f"Only {place} Can Apply")
     # 4. Source only says Remote / blank -> say Remote, do NOT invent Worldwide.
     return ("Remote", "Check Apply link for who can apply")
 
@@ -594,6 +650,9 @@ def main():
             salary = f"{salary_raw} {period}" if period else salary_raw
     else:
         salary = extract_salary(job.get("desc", ""))
+    # NEW: Tiny API salary guard - same rule as extract_salary. "$3" from API is also noise.
+    if salary and _is_tiny_salary(salary.split(" per ")[0] if " per " in salary else salary, _find_period(salary)):
+        salary = ""
     salary_line = f"\n💰 Salary: {html.escape(salary)}" if salary else "\n💰 Salary: Not listed"
     job_type = extract_job_type(job.get("desc", ""), job.get("title", ""))
     type_line = f"\n🕒 Type: {job_type}" if job_type else ""
