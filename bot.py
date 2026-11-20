@@ -1,7 +1,7 @@
-# RemoteJobsHiringNow - V6 FIXED
-# Fix: Try ALL sources in same run, relaxed open-check, debug why job rejected
+# RemoteJobsHiringNow - V7 - NO "FREE" word, + Deadline detection
+# Bot: 1 REMOTE JOB every 5h + 1 ad per day. Paid posts MANUAL only.
 import os, json, requests, html, random, re, sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
@@ -10,7 +10,7 @@ CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip() or os.getenv("TELEGRAM_CHAT_ID"
 if not CHANNEL_ID:
     CHANNEL_ID = "@RemoteJobsHiringNow"
 ADMIN = "@dantez4u"
-MAX_AGE_DAYS = 30  # FIXED: Was 7, too strict. RemoteOK dates are often 2-3 weeks old but still open
+MAX_AGE_DAYS = 30
 
 print(f"DEBUG: BOT_TOKEN exists? {bool(BOT_TOKEN)} len={len(BOT_TOKEN)}")
 print(f"DEBUG: CHANNEL_ID = {CHANNEL_ID}")
@@ -40,14 +40,33 @@ def parse_date(raw):
     except:
         return None
 
+def extract_deadline(job):
+    # Try to find real deadline in description
+    text = job["desc"] + " " + job["title"]
+    # Patterns: "Deadline: 30 Nov 2026", "Apply by Dec 15", "Closing date: 2026-12-01", "Closes on 15/12/2026"
+    patterns = [
+        r"(deadline|apply by|closing date|closes on|applications close|last date to apply)[\s:]*([0-9]{1,2}[\s\-/][A-Za-z]{3,9}[\s\-/][0-9]{2,4})",
+        r"(deadline|apply by|closing date|closes on)[\s:]*([A-Za-z]{3,9}\s+[0-9]{1,2},?\s+[0-9]{4})",
+        r"(deadline|apply by)[\s:]*([0-9]{4}-[0-9]{2}-[0-9]{2})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return f"⏰ Deadline: {m.group(2).strip()} - Apply before this date"
+    # No deadline in source - estimate from posted date
+    if job.get("posted_date"):
+        posted = job["posted_date"]
+        est = posted + timedelta(days=14)
+        return f"⏰ Deadline: Not listed by company - Apply ASAP. Posted {posted.strftime('%d %b %Y')}, most remote jobs close within 14 days (around {est.strftime('%d %b %Y')}). If you see this after that, check link first - it may be closed."
+    return "⏰ Deadline: Not listed - Apply ASAP. Remote jobs close fast, don't wait."
+
 def fetch_remoteok():
     try:
-        # FIXED: No ?tag=remote, use plain API - gives 100+ jobs, not 3
         r = requests.get("https://remoteok.com/api", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
         out = []
         for j in r.json():
             if not isinstance(j, dict) or not j.get("position"): continue
-            out.append({"title": j.get("position"), "company": j.get("company"), "url": j.get("url"), "location": j.get("location","Remote"), "desc": " ".join(j.get("tags",[])) + " " + str(j.get("description",""))[:500], "salary": f"${j.get('salary_min','')} - ${j.get('salary_max','')}" if j.get("salary_min") else "See link", "source": "RemoteOK", "posted_date": parse_date(j.get("date"))})
+            out.append({"title": j.get("position"), "company": j.get("company"), "url": j.get("url"), "location": j.get("location","Remote"), "desc": " ".join(j.get("tags",[])) + " " + str(j.get("description",""))[:800], "salary": f"${j.get('salary_min','')} - ${j.get('salary_max','')}" if j.get("salary_min") else "See link", "source": "RemoteOK", "posted_date": parse_date(j.get("date"))})
         print(f"RemoteOK fetched {len(out)} jobs")
         return out
     except Exception as e:
@@ -118,21 +137,16 @@ def is_similar(cat1, cat2):
     return len(set(cat1.lower().split()) & set(cat2.lower().split())) > 0
 
 def reject_reason(job, posted):
-    # FIXED: Only reject if REALLY closed. Old code rejected "disclosed", "enclosed" because they contain "closed"
-    if job["url"] in posted:
-        return "repeat"
+    if job["url"] in posted: return "repeat"
     text = (job["title"] + " " + job["desc"]).lower()
-    # Only exact phrases, not single word "closed"
     if any(x in text for x in ["position filled", "job is closed", "applications closed", "no longer accepting applications", "this job has expired", "position has been filled"]):
         return "really-closed"
-    if any(x in text for x in ["pay to apply", "pay fee", "training fee", "activation fee", "pay $50 to apply"]):
+    if any(x in text for x in ["pay to apply", "pay fee", "training fee", "activation fee"]):
         return "scam-fee"
     if job.get("posted_date"):
         age = (datetime.now(timezone.utc) - job["posted_date"]).days
-        if age > MAX_AGE_DAYS:
-            return f"too-old-{age}d"
-    if not job["url"] or len(job["url"]) < 10:
-        return "no-url"
+        if age > MAX_AGE_DAYS: return f"too-old-{age}d"
+    if not job["url"] or len(job["url"]) < 10: return "no-url"
     return None
 
 def analyze_job(job):
@@ -158,7 +172,7 @@ def analyze_job(job):
 def send_to_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     resp = requests.post(url, data={"chat_id": CHANNEL_ID, "text": text, "parse_mode": "HTML"}, timeout=20)
-    print(f"TELEGRAM RESPONSE: {resp.status_code} - {resp.text[:500]}")
+    print(f"TELEGRAM RESPONSE: {resp.status_code} - {resp.text[:300]}")
     return resp
 
 def main():
@@ -167,7 +181,6 @@ def main():
     print(f"Posted memory: {len(posted)} jobs")
     today = datetime.now().strftime("%Y-%m-%d")
     hour = datetime.now(timezone.utc).hour
-    print(f"UTC Hour: {hour}, Today: {today}")
 
     if hour == 6 and state.get("ad_posted_today") != today:
         ad_text = f"""📢 <b>ADVERTISE HERE - TO GLOBAL JOB SEEKERS</b>
@@ -189,66 +202,58 @@ Share this channel 👉 https://t.me/RemoteJobsHiringNow
             save_json("state.json", state)
         return
 
-    # FIXED: Try ALL sources in this ONE run, in rotated order. Don't wait 5h if first fails.
     start_idx = (state.get("last_source", -1) + 1) % len(SOURCES)
     ordered_sources = SOURCES[start_idx:] + SOURCES[:start_idx]
-    print(f"Will try sources in order: {ordered_sources}")
+    print(f"Will try sources: {ordered_sources}")
     last_cats = state.get("last_categories", [])
-
     best_overall = None
     best_score = -999
     best_cat = ""
     best_source_idx = start_idx
 
-    for idx, source_name in enumerate(ordered_sources):
+    for source_name in ordered_sources:
         jobs = FETCHERS[source_name]()
         random.shuffle(jobs)
         for job in jobs:
-            reason = reject_reason(job, posted)
-            if reason:
-                continue
+            if reject_reason(job, posted): continue
             cat = get_category(job["title"])
-            if any(is_similar(cat, old) for old in last_cats):
-                continue
+            if any(is_similar(cat, old) for old in last_cats): continue
             who, score = analyze_job(job)
             if score > best_score:
                 best_score = score
                 best_overall = (job, who)
                 best_cat = cat
                 best_source_idx = SOURCES.index(source_name)
-        # If we found a good job from this source, stop - we don't need to check other sources
         if best_overall and best_score >= 10:
-            print(f"Found good job from {source_name}, stopping search")
+            print(f"Found good job from {source_name}")
             break
-        # If we found any job, but not perfect, keep it as backup and try next source for better one
-        print(f"After {source_name}: best so far = {best_overall[0]['title'] if best_overall else 'None'} score={best_score}")
+        print(f"After {source_name}: best={best_overall[0]['title'] if best_overall else 'None'}")
 
     if not best_overall:
-        # LAST RESORT: Allow any open job even if category repeats, but NEVER repeat URL and NEVER scam
-        print("No job with new category found, trying fallback - any open job")
+        print("Fallback - any open job")
         for source_name in ordered_sources:
             jobs = FETCHERS[source_name]()
             for job in jobs:
-                if reject_reason(job, posted):
-                    continue
+                if reject_reason(job, posted): continue
                 who, score = analyze_job(job)
                 best_overall = (job, who)
                 best_cat = get_category(job["title"])
                 best_source_idx = SOURCES.index(source_name)
                 break
-            if best_overall:
-                break
+            if best_overall: break
 
     if not best_overall:
-        print("CRITICAL: No open job found from ANY source. Check if APIs are down.")
+        print("No open job from ANY source")
         return
 
     job, who = best_overall
     date_str = ""
     if job.get("posted_date"):
-        date_str = f"\n📅 Posted: {job['posted_date'].strftime('%d %b %Y')} - Still Open ✅"
+        date_str = f"\n📅 Posted: {job['posted_date'].strftime('%d %b %Y')}"
+    deadline_str = extract_deadline(job)
 
-    message = f"""🌍 <b>FREE JOB - {best_cat}</b> {date_str}
+    # REMOVED "FREE" - Now "REMOTE JOB" = paid job, not free labour
+    message = f"""🌍 <b>REMOTE JOB - {best_cat}</b> {date_str}
 
 📌 <b>{html.escape(job['title'])}</b>
 🏢 {html.escape(job['company'] or 'Company')}
@@ -257,16 +262,17 @@ Share this channel 👉 https://t.me/RemoteJobsHiringNow
 🏷️ Source: {job['source']}
 
 {who}
+{deadline_str}
 
 <b>HOW TO APPLY:</b>
 1. Tap Apply link below
 2. Click Apply on company site
 3. Upload CV + fill form (2-5 mins)
-4. No fee - If they ask for money, it's SCAM, leave it
+4. No fee to apply - If they ask for money, it's SCAM, leave it
 
 👉 <b>Apply Here:</b> {job['url']}
 
-⚠️ Never pay to get a job.
+⚠️ Never pay to apply for a job.
 📢 Want your skills / hiring post here? DM Admin {ADMIN}
 Share 👉 https://t.me/RemoteJobsHiringNow
 """
@@ -279,8 +285,6 @@ Share 👉 https://t.me/RemoteJobsHiringNow
         save_json("state.json", state)
         save_json("posted.json", list(posted))
         print(f"SUCCESS: Posted {best_cat} from {job['source']}")
-    else:
-        print("FAILED: Not saving, will retry next run")
 
 if __name__ == "__main__":
     main()
