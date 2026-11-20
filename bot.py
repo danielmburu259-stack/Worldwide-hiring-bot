@@ -1,4 +1,4 @@
-# RemoteJobsHiringNow - FINAL - Bot reads channel, Any category, Worldwide, Salary Priority
+# RemoteJobsHiringNow - FINAL - Better sources first, Backup if empty, Strict Worldwide check
 import os, json, requests, html, random, re, sys, hashlib
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
@@ -52,7 +52,23 @@ BLOCKED_IN_DESC = ["pay to apply", "pay fee", "training fee", "activation fee", 
 
 NON_WORLDWIDE = ["(eu)", "europe", "germany", "berlin", "france", "netherlands", "spain", "switzerland", "swiss", "zurich", "austria", "belgium", "(uk)", "united kingdom", "london", "england", " uk", "(us)", "united states", "usa", "america", "new york", "california", "texas", " us", "canada", "australia", "india", "philippines", "nigeria", "kenya", "south africa"]
 
-SOURCES = ["remoteok", "remotive", "arbeitnow", "wwr_all", "wwr_design", "jobicy", "remote_co", "himalayas"]
+# FIXED WORLDWIDE: Phrases in DESCRIPTION that prove job is NOT worldwide, even if Location says Remote
+RESTRICTED_IN_DESC = [
+    r"\bus and european\b", r"\bus & european\b", r"\b us and europe\b", r"\busa and europe\b",
+    r"\bunited states and europe\b", r"\bnorth america\b", r"\bnorth america only\b",
+    r"\bus only\b", r"\busa only\b", r"\bunited states only\b", r"\beurope only\b", r"\buk only\b", r"\beu only\b",
+    r"\bus-based\b", r"\busa-based\b", r"\b europe-based\b", r"\buk-based\b",
+    r"\bmust be located in\b", r"\bmust reside in\b", r"\bmust live in\b",
+    r"\beligible to work in (the )?us\b", r"\beligible to work in (the )?uk\b", r"\bwork authorization in (the )?us\b",
+    r"\bcandidates? (must be )?in (the )?us\b", r"\bapplicants? (must be )?in (the )?us\b",
+    r"\bacross the us\b", r"\bacross the united states\b", r"\bthroughout the us\b",
+    r"\bus market", r"\beuropean market", r"\bus clients", r"\beuropean clients",
+]
+
+# FIXED SOURCES: Better sources first (real salary + real location), others ONLY as backup
+BETTER_SOURCES = ["remoteok", "remotive"]
+BACKUP_SOURCES = ["arbeitnow", "wwr_all", "wwr_design", "jobicy", "remote_co", "himalayas"]
+SOURCES = BETTER_SOURCES + BACKUP_SOURCES
 
 def load_json(name, default):
     try:
@@ -162,7 +178,6 @@ def extract_job_type(desc, title):
     return ""
 
 def extract_snippet(desc, title="", company=""):
-    # PASS 1 + 2: Use ONLY real sentences from source, never invent duties
     clean = ""
     if desc:
         clean = html.unescape(desc)
@@ -199,8 +214,6 @@ def extract_snippet(desc, title="", company=""):
             if not sentence.endswith(".") and not sentence.endswith("..."):
                 sentence += "."
             return sentence
-    # PASS 3 - FIXED SAFE FALLBACK: No real sentence found, do NOT invent duties.
-    # Only repeat what we KNOW is true: Title + Company. Point to link for real details.
     t = (title or "").strip()
     c = (company or "").strip()
     if t and c:
@@ -221,9 +234,15 @@ def is_english(title, desc):
     return True
 
 def is_worldwide(job):
+    # FIXED: Check Location + Title + Description, not just Location
     loc = (job.get("location") or "").lower()
     for bad in NON_WORLDWIDE:
         if bad in loc:
+            return False
+    # If description proves it's US/EU only, it's NOT worldwide - even if Location says Remote
+    desc_text = ((job.get("title") or "") + " " + (job.get("desc") or "")).lower()
+    for pat in RESTRICTED_IN_DESC:
+        if re.search(pat, desc_text):
             return False
     if loc.strip() in ["", "remote", "worldwide", "global", "anywhere", "remote - worldwide"]:
         return True
@@ -320,7 +339,7 @@ def reject_reason(job, posted_urls, posted_ids, channel_titles, max_age=MAX_AGE_
     if age > max_age:
         return f"too-old-{age}d"
     if not is_worldwide(job):
-        return "not-worldwide"
+        return "not-worldwide-desc-or-location"
     if not is_english(job["title"], job["desc"]):
         return "not-english"
     return None
@@ -341,6 +360,41 @@ def pick_best(candidates, last_cat):
         return (has_salary, diff_cat, -age)
     candidates_sorted = sorted(candidates, key=score, reverse=True)
     return candidates_sorted[0] if candidates_sorted else None
+
+def collect_candidates(source_list, posted_urls, posted_ids, channel_titles, last_cat):
+    # Helper: collect from one tier only (Better OR Backup), fresh 2 days first, then 7 days
+    candidates = []
+    for source_name in source_list:
+        jobs = FETCHERS[source_name]()
+        random.shuffle(jobs)
+        for job in jobs:
+            if reject_reason(job, posted_urls, posted_ids, channel_titles, max_age=MAX_AGE_DAYS):
+                continue
+            if not is_fresh(job):
+                continue
+            cat = get_freelancer_category(job["title"], job["desc"])
+            if not cat:
+                continue
+            candidates.append((job, cat, source_name))
+        if len(candidates) >= 20:
+            break
+    if candidates:
+        return candidates
+    # Same tier, backup age 7 days
+    candidates = []
+    for source_name in source_list:
+        jobs = FETCHERS[source_name]()
+        random.shuffle(jobs)
+        for job in jobs:
+            if reject_reason(job, posted_urls, posted_ids, channel_titles, max_age=MAX_AGE_DAYS):
+                continue
+            cat = get_freelancer_category(job["title"], job["desc"])
+            if not cat:
+                continue
+            candidates.append((job, cat, source_name))
+        if len(candidates) >= 20:
+            break
+    return candidates
 
 def main():
     state = load_json("state.json", {"last_source": -1, "last_categories": [], "ad_posted_today": "", "last_title": "", "last_source_name": ""})
@@ -368,42 +422,16 @@ def main():
     last_cats = state.get("last_categories", [])
     last_cat = last_cats[-1] if last_cats else ""
     last_source_name = state.get("last_source_name", "")
-    start_idx = (state.get("last_source", -1) + 1) % len(SOURCES)
-    ordered = SOURCES[start_idx:] + SOURCES[:start_idx]
-    ordered = [s for s in ordered if s != last_source_name]
-    print(f"Source order (last source removed): {ordered}")
-    candidates = []
-    print("PASS 1: Fresh 2 days, Any freelancer category, Worldwide, English")
-    for source_name in ordered:
-        jobs = FETCHERS[source_name]()
-        random.shuffle(jobs)
-        for job in jobs:
-            if reject_reason(job, posted_urls, posted_ids, channel_titles, max_age=MAX_AGE_DAYS):
-                continue
-            if not is_fresh(job):
-                continue
-            cat = get_freelancer_category(job["title"], job["desc"])
-            if not cat:
-                continue
-            candidates.append((job, cat, source_name))
-        if len(candidates) >= 20:
-            break
+    # FIXED ORDER: Better sources first, rotate to avoid same source twice in a row
+    better_ordered = [s for s in BETTER_SOURCES if s != last_source_name] + [s for s in BETTER_SOURCES if s == last_source_name]
+    backup_ordered = [s for s in BACKUP_SOURCES if s != last_source_name]
+    print(f"TIER 1 - Better sources: {better_ordered}")
+    candidates = collect_candidates(better_ordered, posted_urls, posted_ids, channel_titles, last_cat)
     chosen = pick_best(candidates, last_cat) if candidates else None
     if not chosen:
-        print("PASS 2: Backup 7 days, Any freelancer category")
-        candidates = []
-        for source_name in ordered:
-            jobs = FETCHERS[source_name]()
-            random.shuffle(jobs)
-            for job in jobs:
-                if reject_reason(job, posted_urls, posted_ids, channel_titles, max_age=MAX_AGE_DAYS):
-                    continue
-                cat = get_freelancer_category(job["title"], job["desc"])
-                if not cat:
-                    continue
-                candidates.append((job, cat, source_name))
-            if len(candidates) >= 20:
-                break
+        print("TIER 1 empty - TIER 2 Backup sources only")
+        print(f"TIER 2 - Backup sources: {backup_ordered}")
+        candidates = collect_candidates(backup_ordered, posted_urls, posted_ids, channel_titles, last_cat)
         chosen = pick_best(candidates, last_cat) if candidates else None
     if not chosen:
         print("No freelancer job found - Worldwide + English + Not in channel")
@@ -429,7 +457,7 @@ def main():
         posted_data.append({"url": job["url"], "id": make_id(job), "title": job["title"], "date": today, "category": cat, "source": source_name})
         last_cats.append(cat)
         state["last_categories"] = last_cats[-15:]
-        state["last_source"] = SOURCES.index(source_name) if source_name in SOURCES else start_idx
+        state["last_source"] = SOURCES.index(source_name) if source_name in SOURCES else 0
         state["last_source_name"] = source_name
         state["last_title"] = job["title"]
         save_json("state.json", state)
