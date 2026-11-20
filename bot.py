@@ -1,4 +1,4 @@
-# RemoteJobsHiringNow - FINAL PERMANENT - Bot reads channel history, no manual JSON
+# RemoteJobsHiringNow - FINAL - Bot reads channel, Any category, Worldwide, Salary Priority
 import os, json, requests, html, random, re, sys, hashlib
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
@@ -17,7 +17,6 @@ if not BOT_TOKEN:
     print("ERROR: BOT_TOKEN empty")
     sys.exit(1)
 
-# Any freelancer category is OK
 FREELANCER_CATS = ["Writing", "Customer Support", "Data Entry", "Social Media", "Design", "Virtual Assistant", "Marketing", "Translation", "Transcription", "Sales", "Admin", "Video Editing"]
 
 CAT_KEYWORDS = {
@@ -96,21 +95,12 @@ def get_age_days(job):
 def is_fresh(job):
     return get_age_days(job) <= PREFERRED_AGE_DAYS
 
-# ===== PERMANENT ANTI-REPEAT: READ CHANNEL ITSELF =====
 def fetch_channel_posted_urls():
-    """
-    Reads your actual Telegram channel page https://t.me/s/RemoteJobsHiringNow
-    and extracts every job link already posted.
-    This is the source of truth. posted.json is only a backup.
-    You NEVER need to update JSON manually again.
-    """
     urls = set()
     titles = set()
     try:
-        # t.me/s/ shows public channel history without login
         r = requests.get(f"https://t.me/s/{CHANNEL_USERNAME}", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
         page_html = r.text
-        # 1. All links in channel posts
         all_links = re.findall(r'href="([^"]+)"', page_html)
         for link in all_links:
             link = html.unescape(link)
@@ -118,8 +108,6 @@ def fetch_channel_posted_urls():
                 continue
             if link.startswith("http") and len(link) > 12:
                 urls.add(norm_url(link))
-        # 2. All job titles in channel posts - <b>Title</b> after 📌
-        # Channel page contains post text, extract titles to block same title+company repeats
         texts = re.findall(r"📌[^<]*<b>(.*?)</b>", page_html)
         for t in texts:
             clean_t = re.sub(r"<[^>]+>", "", t).strip().lower()
@@ -187,7 +175,11 @@ def extract_snippet(desc):
         low = s.lower()
         if any(w in low for w in skip_words):
             continue
-        if len(s.strip()) < 20:
+        # FIXED: Skip short fluff like "Thatch is changing that."
+        if len(s.strip()) < 45:
+            continue
+        # FIXED: Must sound like a real job duty, not marketing
+        if not any(w in low for w in ["you will", "responsib", "design", "work", "create", "build", "help", "join", "looking for", "we need", "role", "experience", "skill"]):
             continue
         sentence = s.strip()
         break
@@ -335,7 +327,6 @@ def pick_best(candidates, last_cat):
 def main():
     state = load_json("state.json", {"last_source": -1, "last_categories": [], "ad_posted_today": "", "last_title": "", "last_source_name": ""})
     posted_data = load_json("posted.json", [])
-    # 1. Backup memory from posted.json
     posted_urls = set()
     posted_ids = set()
     for item in posted_data:
@@ -344,7 +335,6 @@ def main():
             posted_ids.add(item.get("id", ""))
         else:
             posted_urls.add(norm_url(item))
-    # 2. PERMANENT: Real memory from channel itself - overrides / adds to JSON
     channel_urls, channel_titles = fetch_channel_posted_urls()
     posted_urls = posted_urls.union(channel_urls)
     print(f"Total memory: {len(posted_urls)} URLs (JSON + Channel) | Last source: {state.get('last_source_name')} | Last cat: {state.get('last_categories', [])[-1:] if state.get('last_categories') else []}")
