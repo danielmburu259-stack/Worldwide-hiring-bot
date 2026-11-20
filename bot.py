@@ -6,6 +6,7 @@
 #    ALLOWED: Representative, Manager, Senior, Executive, Lead - if remote + worldwide
 #    BLOCKED: Engineer, Developer, Doctor, Lawyer, Accountant, etc.
 # 4. NEVER post tag soup. Tags are not a description.
+# 5. Salary: show period ONLY if job itself says it (per year / per month / per week / per hour). Never invent.
 import os, json, requests, html, random, re, sys, hashlib
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
@@ -157,16 +158,76 @@ def clean_title_company(title, company, url):
         c = m.group(1).replace("-", " ").title()
     return t, c
 
+# --- ONLY CHANGED PART STARTS HERE: Salary period ---
+# Professional rule: return salary exactly as job states it, plus its period if job states it.
+# Never invent a period. If job says "$50,000" with no period, return "$50,000".
+def _find_period(text):
+    if not text:
+        return ""
+    # Check if text already has a period - avoid double "per per year"
+    # Order matters: check longer forms first
+    m = re.search(r"\bper\s+annum\b", text, flags=re.I)
+    if m:
+        return "per year"
+    m = re.search(r"\bper\s+(hour|week|month|year)\b", text, flags=re.I)
+    if m:
+        return "per " + m.group(1).lower()
+    m = re.search(r"/\s*(hour|hr|week|month|year|yr)\b", text, flags=re.I)
+    if m:
+        w = m.group(1).lower()
+        if w in ("hr",):
+            return "per hour"
+        if w in ("yr",):
+            return "per year"
+        return "per " + w
+    m = re.search(r"\bannually\b", text, flags=re.I)
+    if m:
+        return "per year"
+    m = re.search(r"\bmonthly\b", text, flags=re.I)
+    if m:
+        return "per month"
+    m = re.search(r"\bweekly\b", text, flags=re.I)
+    if m:
+        return "per week"
+    m = re.search(r"\bhourly\b", text, flags=re.I)
+    if m:
+        return "per hour"
+    m = re.search(r"\ba\s+(year|month|week|hour)\b", text, flags=re.I)
+    if m:
+        return "per " + m.group(1).lower()
+    return ""
+
+def _has_period(text):
+    return _find_period(text) != ""
+
 def extract_salary(desc):
     if not desc:
         return ""
-    m = re.search(r"\$\s?[\d,]+(?:\s?[-–]\s?\$?\s?[\d,]+)?(?:\s?/\s?(hour|hr|year|yr|month))?", desc, flags=re.I)
+    # 1. $ amount with optional period right after it: "$50,000 - $58,000 per year" / "$25/hour" / "$2,000 monthly"
+    m = re.search(r"\$\s?[\d,]+(?:\s?[-–]\s?\$?\s?[\d,]+)?", desc, flags=re.I)
     if m:
-        return m.group(0).strip()
+        salary_part = m.group(0).strip()
+        # Period could be right after amount, or elsewhere in same description
+        after = desc[m.end():m.end()+40]
+        period = _find_period(after)
+        if not period:
+            period = _find_period(desc)
+        if period:
+            return f"{salary_part} {period}"
+        return salary_part
+    # 2. Fallback: 60k - 80k / $60k / € / £ - same period logic
     m2 = re.search(r"(\d{2,3}k\s?[-–]\s?\d{2,3}k|\$\d+k|€\s?[\d,]+|£\s?[\d,]+)", desc, flags=re.I)
     if m2:
-        return m2.group(0)
+        salary_part = m2.group(0).strip()
+        after = desc[m2.end():m2.end()+40]
+        period = _find_period(after)
+        if not period:
+            period = _find_period(desc)
+        if period:
+            return f"{salary_part} {period}"
+        return salary_part
     return ""
+# --- ONLY CHANGED PART ENDS HERE: Salary period ---
 
 def extract_job_type(desc, title):
     text = ((title or "") + " " + (desc or "")).lower()
@@ -415,7 +476,16 @@ def main():
         date_str = f"\n📅 Posted: {job['posted_date'].strftime('%d %b %Y')}"
     else:
         date_str = "\n📅 Posted: Recently"
-    salary = (job.get("salary") or "").strip() or extract_salary(job.get("desc", ""))
+    # Salary: ONLY CHANGE HERE in main() - attach period if API salary has none, using job's own description
+    salary_raw = (job.get("salary") or "").strip()
+    if salary_raw:
+        if _has_period(salary_raw):
+            salary = salary_raw
+        else:
+            period = _find_period(job.get("desc", ""))
+            salary = f"{salary_raw} {period}" if period else salary_raw
+    else:
+        salary = extract_salary(job.get("desc", ""))
     salary_line = f"\n💰 Salary: {html.escape(salary)}" if salary else "\n💰 Salary: Not listed"
     job_type = extract_job_type(job.get("desc", ""), job.get("title", ""))
     type_line = f"\n🕒 Type: {job_type}" if job_type else ""
