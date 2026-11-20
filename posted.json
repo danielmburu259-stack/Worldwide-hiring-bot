@@ -1,34 +1,8 @@
-[
   {
-    "url": "https://www.arbeitnow.co.uk/jobs/companies/legal-500/remote-copy-editor-177911",
-    "id": "legal500-copy-editor",
-    "title": "Copy Editor",
+    "url": "https://himalayas.app/companies/manulife/jobs/bilingual-regional-field-underwriting-consultant",
+    "id": "manulife-underwriting",
+    "title": "Bilingual, Regional Field Underwriting Consultant",
     "date": "2026-11-20",
     "category": "Writing",
-    "source": "arbeitnow"
-  },
-  {
-    "url": "https://www.arbeitnow.ch/jobs/companies/jobgether/accounting-administration-specialist-switzerland-417263",
-    "id": "jobgether-accounting-admin",
-    "title": "Accounting & Administration Specialist",
-    "date": "2026-11-20",
-    "category": "Admin",
-    "source": "arbeitnow"
-  },
-  {
-    "url": "https://himalayas.app/companies/samsara/jobs/customer-success-adoption-specialist",
-    "id": "samsara-customer-success",
-    "title": "Customer Success Adoption Specialist",
-    "date": "2026-11-20",
-    "category": "Customer Support",
     "source": "himalayas"
-  },
-  {
-    "url": "https://weworkremotely.com/remote-jobs/tebra-product-designer",
-    "id": "b68c2611378a",
-    "title": "Tebra: Product Designer",
-    "date": "2026-11-20",
-    "category": "Design",
-    "source": "wwr_design"
   }
-]
