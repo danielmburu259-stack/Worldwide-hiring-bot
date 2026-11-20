@@ -169,20 +169,35 @@ def extract_snippet(desc):
     clean = re.sub(r"\s+", " ", clean).strip()
     if len(clean) < 20:
         return ""
-    skip_words = ["headquarters", "only initiates contact", "official email", "equal opportunity", "about us", "about tebra", "about the company", "we are an", "we're hiring", "location:", "remote:", "job type", "headquarters:", "united states -", "check link"]
+    # Skip boilerplate + company pitch - not what YOU will do
+    skip_words = ["headquarters", "only initiates contact", "official email", "equal opportunity", "about us", "about tebra", "about the company", "we are an", "we're hiring", "location:", "remote:", "job type", "headquarters:", "united states -", "check link", "we help companies", "we provide", "we offer", "our mission", "our platform", "we are changing", "we are building", "we are on a mission"]
     sentences = clean.split(". ")
+    # PASS 1 - FIXED: Look for YOUR ROLE first - "you will / your role / responsibilities"
+    role_words = ["you will", "you'll", "your role", "in this role", "responsibilities", "as a", "you will be", "your job", "what you'll do", "you are responsible"]
     for s in sentences:
         low = s.lower()
         if any(w in low for w in skip_words):
             continue
         if len(s.strip()) < 45:
             continue
-        if not any(w in low for w in ["you will", "responsib", "design", "work", "create", "build", "help", "join", "looking for", "we need", "role", "experience", "skill"]):
-            continue
-        sentence = s.strip()
-        break
+        if any(w in low for w in role_words):
+            sentence = s.strip()
+            break
     else:
-        return ""
+        # PASS 2 - Fallback: any real job-duty sentence, still skip company pitch
+        sentence = ""
+        for s in sentences:
+            low = s.lower()
+            if any(w in low for w in skip_words):
+                continue
+            if len(s.strip()) < 45:
+                continue
+            if not any(w in low for w in ["design", "work", "create", "build", "help", "join", "looking for", "we need", "role", "experience", "skill", "write", "support", "manage"]):
+                continue
+            sentence = s.strip()
+            break
+        if not sentence:
+            return ""
     if len(sentence) > 160:
         sentence = sentence[:157] + "..."
     if not sentence.endswith(".") and not sentence.endswith("..."):
@@ -392,7 +407,6 @@ def main():
     if job["title"].strip().lower() == state.get("last_title", "").strip().lower():
         print("SKIP: Same title as last post")
         return
-    # REVERTED: Like big platforms - if no exact date, say Recently, don't skip the job
     date_str = ""
     if job.get("posted_date"):
         date_str = f"\n📅 Posted: {job['posted_date'].strftime('%d %b %Y')}"
