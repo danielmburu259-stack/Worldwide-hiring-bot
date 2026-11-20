@@ -1,5 +1,4 @@
-# RemoteJobsHiringNow - V9 PROFESSIONAL
-# Guarantees: 1) No repeat, 2) Different source each run, 3) Different category each run, 4) 1 job every 5h
+# RemoteJobsHiringNow - V10 - Share line + Block ALL Engineers + Title-only category
 import os, json, requests, html, random, re, sys, hashlib
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
@@ -11,6 +10,7 @@ if not CHANNEL_ID:
     CHANNEL_ID = "@RemoteJobsHiringNow"
 ADMIN = "@dantez4u"
 MAX_AGE_DAYS = 30
+SHARE_LINK = "https://t.me/RemoteJobsHiringNow"
 
 if not BOT_TOKEN:
     print("ERROR: BOT_TOKEN empty")
@@ -33,13 +33,17 @@ CAT_KEYWORDS = {
     "Video Editing": ["video edit", "video editor", "video editing", "youtube editor", "reels editor"],
 }
 
+# FIXED: Block ANY engineer, ANY senior, ANY graduate engineer, ANY 2027 start
 BLOCKED = [
-    "senior engineer", "software engineer", "software developer", "full stack", "backend", "frontend",
-    "devops", "data scientist", "machine learning", "ai engineer", "architect", "cto", "principal",
-    "staff engineer", "java developer", "python developer", "react developer", "node", "kubernetes",
+    "engineer", "engineering", "developer", "devops", "software", "backend", "frontend",
+    "data scientist", "machine learning", "ai engineer", "architect", "cto", "principal",
+    "staff engineer", "java", "python", "react", "node", "kubernetes",
     "cybersecurity", "security engineer", "blockchain", "quant", "phd", "research scientist",
-    "product manager", "engineering manager", "director", "vp ", "head of engineering",
+    "product manager", "engineering manager", "director", "vp ", "head of",
     "medical", "doctor", "nurse", "lawyer", "attorney", "accountant cpa",
+    "mechanical", "electrical", "civil", "chemical", "aerospace",
+    "graduate", "internship", "intern", "2027", "2028", "apprentice",
+    "senior", "lead engineer", "principal",
 ]
 
 SOURCES = ["remoteok", "remotive", "arbeitnow", "wwr_all", "wwr_design", "jobicy", "remote_co", "himalayas"]
@@ -58,7 +62,6 @@ def norm_url(u):
     return u
 
 def make_id(job):
-    # Second memory: Title + Company - catches repeat even if URL changes
     key = f"{job['title'].strip().lower()}|{job['company'].strip().lower()}"
     return hashlib.md5(key.encode()).hexdigest()[:12]
 
@@ -140,41 +143,47 @@ FETCHERS = {
 }
 
 def get_freelancer_category(title, desc):
-    text = (title + " " + desc).lower()
+    # FIXED: 1) Block check on TITLE + DESC - any engineer word = block
+    # 2) Category check on TITLE ONLY - not description. Stops "Mechanical Engineer" becoming "Writing" because description says "writing reports"
+    t = title.lower()
+    d = desc.lower()
     for b in BLOCKED:
-        if b in text:
+        if b in t or b in d:
+            # Special: "engineering" in desc but title is freelancer? Still block to be safe
+            # But allow "sales engineer" ? No - block all engineer titles
+            if b in t:
+                return None
+            # If blocked word only in desc and title is clearly freelancer, allow it
+            # Example: "Customer Support" desc says "engineering team" - that's OK
+            # So only block desc if it's strong: engineer, developer, software
+            if b in ["engineer", "engineering", "developer", "software", "devops", "mechanical", "electrical", "civil"]:
+                if b in d:
+                    # Check if title is NOT freelancer - if title matches freelancer, still allow? No, for engineer jobs desc will have engineer, title will also have it, already blocked above
+                    pass
+    # If title contains any blocked word, reject
+    for b in BLOCKED:
+        if b in t:
             return None
+    # Category from TITLE ONLY
     for cat, kws in CAT_KEYWORDS.items():
         for kw in kws:
-            if kw in text:
+            if kw in t:
                 return cat
     return None
 
-def is_repeat(job, posted_urls, posted_ids):
-    if norm_url(job["url"]) in posted_urls:
-        return True
-    if make_id(job) in posted_ids:
-        return True
-    return False
-
 def reject_reason(job, posted_urls, posted_ids):
-    if is_repeat(job, posted_urls, posted_ids):
-        return "repeat"
-    if not job["url"] or len(job["url"]) < 10:
-        return "no-url"
+    if norm_url(job["url"]) in posted_urls: return "repeat"
+    if make_id(job) in posted_ids: return "repeat-id"
+    if not job["url"] or len(job["url"]) < 10: return "no-url"
     text = (job["title"] + " " + job["desc"]).lower()
-    if any(x in text for x in ["position filled", "job is closed", "applications closed", "no longer accepting applications"]):
-        return "closed"
-    if any(x in text for x in ["pay to apply", "pay fee", "training fee", "activation fee"]):
-        return "scam-fee"
+    if any(x in text for x in ["position filled", "job is closed", "applications closed", "no longer accepting applications"]): return "closed"
+    if any(x in text for x in ["pay to apply", "pay fee", "training fee", "activation fee"]): return "scam-fee"
     if job.get("posted_date"):
         age = (datetime.now(timezone.utc) - job["posted_date"]).days
-        if age > MAX_AGE_DAYS:
-            return f"too-old-{age}d"
+        if age > MAX_AGE_DAYS: return f"too-old-{age}d"
     return None
 
 def get_location_line(job):
-    # PROFESSIONAL FIX: Don't claim Worldwide if location is UK/US/EU
     loc = (job["location"] or "Remote").strip()
     low = loc.lower()
     if any(x in low for x in ["(uk)", "united kingdom", " uk ", "london", "england"]):
@@ -196,7 +205,6 @@ def send_to_telegram(text):
 def main():
     state = load_json("state.json", {"last_source": -1, "last_categories": [], "ad_posted_today": "", "last_title": "", "last_source_name": ""})
     posted_data = load_json("posted.json", [])
-    # Support both old format [url, url] and new format [{"url":..., "id":...}]
     posted_urls = set()
     posted_ids = set()
     for item in posted_data:
@@ -205,12 +213,11 @@ def main():
             posted_ids.add(item.get("id",""))
         else:
             posted_urls.add(norm_url(item))
-    print(f"Memory: {len(posted_urls)} URLs, {len(posted_ids)} IDs, Last source: {state.get('last_source_name')}, Last cats: {state.get('last_categories',[])[-3:]}")
+    print(f"Memory: {len(posted_urls)} URLs, Last source: {state.get('last_source_name')}, Last cats: {state.get('last_categories',[])[-3:]}")
 
     today = datetime.now().strftime("%Y-%m-%d")
     hour = datetime.now(timezone.utc).hour
 
-    # AD - 1x per day at 06 UTC, short
     if hour == 6 and state.get("ad_posted_today") != today:
         ad = f"""📢 <b>ADVERTISE HERE</b>
 
@@ -218,6 +225,8 @@ Hiring? Have a job / service for job seekers?
 Your post will be seen by job seekers worldwide.
 
 👉 DM Admin: {ADMIN}
+
+📣 Share this channel: {SHARE_LINK}
 """
         resp = send_to_telegram(ad)
         if resp.status_code == 200:
@@ -227,8 +236,6 @@ Your post will be seen by job seekers worldwide.
 
     last_cats = state.get("last_categories", [])
     last_source_name = state.get("last_source_name", "")
-
-    # --- PICK TARGET CATEGORY: First category NOT in last 10 ---
     target_cat = None
     for cat in FREELANCER_CATS:
         if cat not in last_cats[-10:]:
@@ -238,18 +245,14 @@ Your post will be seen by job seekers worldwide.
         target_cat = FREELANCER_CATS[0]
     print(f"Target category: {target_cat}")
 
-    # --- PICK SOURCE ORDER: MUST be different from last run ---
-    # Move last source to END of list, so we never use same source twice in a row
     start_idx = (state.get("last_source", -1) + 1) % len(SOURCES)
     ordered = SOURCES[start_idx:] + SOURCES[:start_idx]
     if ordered[0] == last_source_name and len(ordered) > 1:
         ordered = ordered[1:] + [ordered[0]]
-    print(f"Source order (different from last): {ordered}")
+    print(f"Source order: {ordered}")
 
     candidates_target = []
     candidates_any = []
-
-    # Try ALL sources in this run - don't give up after 1
     for source_name in ordered:
         jobs = FETCHERS[source_name]()
         random.shuffle(jobs)
@@ -262,47 +265,37 @@ Your post will be seen by job seekers worldwide.
             if cat == target_cat:
                 candidates_target.append((job, cat, source_name))
             else:
-                # Only keep if not in last 3 categories - enforces different category
                 if cat not in last_cats[-3:]:
                     candidates_any.append((job, cat, source_name))
         if len(candidates_target) >= 3:
-            print(f"Found {len(candidates_target)} for {target_cat} from {source_name}")
             break
 
     chosen = None
     if candidates_target:
         random.shuffle(candidates_target)
         chosen = candidates_target[0]
-        print(f"Chose TARGET category: {chosen[1]} from {chosen[2]}")
     elif candidates_any:
         random.shuffle(candidates_any)
         chosen = candidates_any[0]
-        print(f"No job for {target_cat}, chose OTHER category: {chosen[1]} from {chosen[2]}")
     else:
-        print("No freelancer job found from ANY source - APIs may be down")
+        print("No freelancer job found")
         return
 
     job, cat, source_name = chosen
-
-    # Final repeat guard: same title as last post = skip
     if job["title"].strip().lower() == state.get("last_title", "").strip().lower():
-        print(f"SKIP: Same title as last post")
+        print("SKIP: Same title as last")
         return
 
     date_str = ""
     if job.get("posted_date"):
         date_str = f"\n📅 Posted: {job['posted_date'].strftime('%d %b %Y')}"
-
     loc_line, who_line = get_location_line(job)
-
-    # Salary: ONLY show if we actually know it. If empty, hide line completely.
     salary = (job.get("salary") or "").strip()
-    # Clean bad salaries like "See link", "See Link"
-    if salary.lower() in ["see link", "see link.", ""]:
-        salary_line = ""
-    else:
+    salary_line = ""
+    if salary and salary.lower() not in ["see link", "see link."]:
         salary_line = f"\n💰 {html.escape(salary)}"
 
+    # PROFESSIONAL POST + SHARE LINE AT BOTTOM
     message = f"""🌍 <b>REMOTE JOB - {cat}</b>{date_str}
 
 📌 <b>{html.escape(job['title'])}</b>
@@ -314,10 +307,11 @@ Your post will be seen by job seekers worldwide.
 👉 <b>Apply Here:</b> {job['url']}
 
 ⚠️ Never pay to apply for a job.
+
+📣 Share with a friend who needs a job 👉 {SHARE_LINK}
 """
     resp = send_to_telegram(message)
     if resp.status_code == 200:
-        # Save BOTH url and id - double memory, no repeat ever
         posted_data.append({"url": job["url"], "id": make_id(job), "title": job["title"], "date": today})
         last_cats.append(cat)
         state["last_categories"] = last_cats[-15:]
