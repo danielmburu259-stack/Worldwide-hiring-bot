@@ -1,4 +1,4 @@
-# RemoteJobsHiringNow - FINAL - Any Freelancer Category, Worldwide, Salary Priority
+# RemoteJobsHiringNow - FINAL PERMANENT - Bot reads channel history, no manual JSON
 import os, json, requests, html, random, re, sys, hashlib
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
@@ -8,6 +8,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip() or os.getenv("TELEGRAM_CHAT_ID", "").strip() or os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
 if not CHANNEL_ID:
     CHANNEL_ID = "@RemoteJobsHiringNow"
+CHANNEL_USERNAME = CHANNEL_ID.lstrip("@") if CHANNEL_ID.startswith("@") else "RemoteJobsHiringNow"
 ADMIN = "@dantez4u"
 SHARE_LINK = "https://t.me/RemoteJobsHiringNow"
 MAX_AGE_DAYS = 7
@@ -16,7 +17,7 @@ if not BOT_TOKEN:
     print("ERROR: BOT_TOKEN empty")
     sys.exit(1)
 
-# Any of these is OK - bot will NOT force Data Entry only
+# Any freelancer category is OK
 FREELANCER_CATS = ["Writing", "Customer Support", "Data Entry", "Social Media", "Design", "Virtual Assistant", "Marketing", "Translation", "Transcription", "Sales", "Admin", "Video Editing"]
 
 CAT_KEYWORDS = {
@@ -50,7 +51,6 @@ BLOCKED_IN_TITLE = [
 
 BLOCKED_IN_DESC = ["pay to apply", "pay fee", "training fee", "activation fee", "membership fee", "position filled", "job is closed", "applications closed", "no longer accepting"]
 
-# NOT worldwide = SKIP. No EU / US / UK-only jobs.
 NON_WORLDWIDE = ["(eu)", "europe", "germany", "berlin", "france", "netherlands", "spain", "switzerland", "swiss", "zurich", "austria", "belgium", "(uk)", "united kingdom", "london", "england", " uk", "(us)", "united states", "usa", "america", "new york", "california", "texas", " us", "canada", "australia", "india", "philippines", "nigeria", "kenya", "south africa"]
 
 SOURCES = ["remoteok", "remotive", "arbeitnow", "wwr_all", "wwr_design", "jobicy", "remote_co", "himalayas"]
@@ -95,6 +95,40 @@ def get_age_days(job):
 
 def is_fresh(job):
     return get_age_days(job) <= PREFERRED_AGE_DAYS
+
+# ===== PERMANENT ANTI-REPEAT: READ CHANNEL ITSELF =====
+def fetch_channel_posted_urls():
+    """
+    Reads your actual Telegram channel page https://t.me/s/RemoteJobsHiringNow
+    and extracts every job link already posted.
+    This is the source of truth. posted.json is only a backup.
+    You NEVER need to update JSON manually again.
+    """
+    urls = set()
+    titles = set()
+    try:
+        # t.me/s/ shows public channel history without login
+        r = requests.get(f"https://t.me/s/{CHANNEL_USERNAME}", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+        page_html = r.text
+        # 1. All links in channel posts
+        all_links = re.findall(r'href="([^"]+)"', page_html)
+        for link in all_links:
+            link = html.unescape(link)
+            if "t.me/" in link or "telegram.me" in link or "telegram.org" in link:
+                continue
+            if link.startswith("http") and len(link) > 12:
+                urls.add(norm_url(link))
+        # 2. All job titles in channel posts - <b>Title</b> after 📌
+        # Channel page contains post text, extract titles to block same title+company repeats
+        texts = re.findall(r"📌[^<]*<b>(.*?)</b>", page_html)
+        for t in texts:
+            clean_t = re.sub(r"<[^>]+>", "", t).strip().lower()
+            if clean_t:
+                titles.add(clean_t)
+        print(f"Channel history: {len(urls)} URLs, {len(titles)} titles from t.me/s/{CHANNEL_USERNAME}")
+    except Exception as e:
+        print(f"Channel history error (will use posted.json backup): {e}")
+    return urls, titles
 
 def clean_title_company(title, company, url):
     t = (title or "").strip()
@@ -145,10 +179,20 @@ def extract_snippet(desc):
     clean = html.unescape(desc)
     clean = re.sub(r"<[^>]+>", " ", clean)
     clean = re.sub(r"\s+", " ", clean).strip()
-    clean = re.sub(r"^(about.*?:|job description:?|description:?)\s*", "", clean, flags=re.I)
     if len(clean) < 20:
         return ""
-    sentence = clean.split(". ")[0].strip()
+    skip_words = ["headquarters", "only initiates contact", "official email", "equal opportunity", "about us", "about tebra", "about the company", "we are an", "we're hiring", "location:", "remote:", "job type", "headquarters:", "united states -", "check link"]
+    sentences = clean.split(". ")
+    for s in sentences:
+        low = s.lower()
+        if any(w in low for w in skip_words):
+            continue
+        if len(s.strip()) < 20:
+            continue
+        sentence = s.strip()
+        break
+    else:
+        return ""
     if len(sentence) > 160:
         sentence = sentence[:157] + "..."
     if not sentence.endswith(".") and not sentence.endswith("..."):
@@ -249,11 +293,13 @@ def get_freelancer_category(title, desc):
                 return cat
     return None
 
-def reject_reason(job, posted_urls, posted_ids, max_age=MAX_AGE_DAYS):
+def reject_reason(job, posted_urls, posted_ids, channel_titles, max_age=MAX_AGE_DAYS):
     if norm_url(job["url"]) in posted_urls:
-        return "repeat-url"
+        return "repeat-url-channel-or-json"
     if make_id(job) in posted_ids:
         return "repeat-id"
+    if job["title"].strip().lower() in channel_titles:
+        return "repeat-title-channel"
     if not job["url"] or len(job["url"]) < 10:
         return "no-url"
     text = (job["title"] + " " + job["desc"]).lower()
@@ -276,7 +322,6 @@ def send_to_telegram(text):
     return resp
 
 def pick_best(candidates, last_cat):
-    # Priority: 1. Has salary, 2. Different category from last post, 3. Freshest
     def score(item):
         job, cat, source_name = item
         salary = (job.get("salary") or "").strip() or extract_salary(job.get("desc", ""))
@@ -290,6 +335,7 @@ def pick_best(candidates, last_cat):
 def main():
     state = load_json("state.json", {"last_source": -1, "last_categories": [], "ad_posted_today": "", "last_title": "", "last_source_name": ""})
     posted_data = load_json("posted.json", [])
+    # 1. Backup memory from posted.json
     posted_urls = set()
     posted_ids = set()
     for item in posted_data:
@@ -298,7 +344,10 @@ def main():
             posted_ids.add(item.get("id", ""))
         else:
             posted_urls.add(norm_url(item))
-    print(f"Memory: {len(posted_urls)} URLs | Last source: {state.get('last_source_name')} | Last cat: {state.get('last_categories', [])[-1:] if state.get('last_categories') else []}")
+    # 2. PERMANENT: Real memory from channel itself - overrides / adds to JSON
+    channel_urls, channel_titles = fetch_channel_posted_urls()
+    posted_urls = posted_urls.union(channel_urls)
+    print(f"Total memory: {len(posted_urls)} URLs (JSON + Channel) | Last source: {state.get('last_source_name')} | Last cat: {state.get('last_categories', [])[-1:] if state.get('last_categories') else []}")
     today = datetime.now().strftime("%Y-%m-%d")
     hour = datetime.now(timezone.utc).hour
     if hour == 6 and state.get("ad_posted_today") != today:
@@ -321,7 +370,7 @@ def main():
         jobs = FETCHERS[source_name]()
         random.shuffle(jobs)
         for job in jobs:
-            if reject_reason(job, posted_urls, posted_ids, max_age=MAX_AGE_DAYS):
+            if reject_reason(job, posted_urls, posted_ids, channel_titles, max_age=MAX_AGE_DAYS):
                 continue
             if not is_fresh(job):
                 continue
@@ -339,7 +388,7 @@ def main():
             jobs = FETCHERS[source_name]()
             random.shuffle(jobs)
             for job in jobs:
-                if reject_reason(job, posted_urls, posted_ids, max_age=MAX_AGE_DAYS):
+                if reject_reason(job, posted_urls, posted_ids, channel_titles, max_age=MAX_AGE_DAYS):
                     continue
                 cat = get_freelancer_category(job["title"], job["desc"])
                 if not cat:
@@ -349,7 +398,7 @@ def main():
                 break
         chosen = pick_best(candidates, last_cat) if candidates else None
     if not chosen:
-        print("No freelancer job found - Worldwide + English")
+        print("No freelancer job found - Worldwide + English + Not in channel")
         return
     job, cat, source_name = chosen
     if job["title"].strip().lower() == state.get("last_title", "").strip().lower():
