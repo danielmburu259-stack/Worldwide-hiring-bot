@@ -24,6 +24,7 @@ jobs:
         run: |
           git config user.name "bot"
           git config user.email "bot@bot.com"
+          git pull --rebase || true
           git add posted.json state.json || true
           git commit -m "update memory" || true
           git push || true
