@@ -7,6 +7,7 @@
 #    BLOCKED: Engineer, Developer, Doctor, Lawyer, Accountant, etc.
 # 4. NEVER post tag soup. Tags are not a description.
 # 5. Salary: show period ONLY if job itself says it (per year / per month / per week / per hour). Never invent.
+# 6. Worldwide: company can be in US/UK/EU, but job scope must NOT be US/UK/EU-only (e.g. US Oncology, UK Sales).
 import os, json, requests, html, random, re, sys, hashlib
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
@@ -54,6 +55,8 @@ BLOCKED_IN_TITLE = [
     "graduate", "internship", "intern", "2027", "2028", "apprentice",
     "underwriting", "underwriter", "insurance", "finance", "banking", "bank", "loan", "mortgage", "field",
     "steuerberatung", "steuer", "m/w/d",
+    # --- ONLY ADDED HERE: medical/pharma titles, never freelancer jobs ---
+    "oncology", "pharma", "pharmaceutical", "clinical",
 ]
 
 BLOCKED_IN_DESC = ["pay to apply", "pay fee", "training fee", "activation fee", "membership fee", "position filled", "job is closed", "applications closed", "no longer accepting"]
@@ -70,6 +73,22 @@ RESTRICTED_IN_DESC = [
     r"\bcandidates? (must be )?in (the )?us\b", r"\bapplicants? (must be )?in (the )?us\b",
     r"\bacross the us\b", r"\bacross the united states\b", r"\bthroughout the us\b",
     r"\bus market", r"\beuropean market", r"\bus clients", r"\beuropean clients",
+]
+
+# --- ONLY ADDED HERE: Title region-scope patterns ---
+# SAFE RULE: Block ONLY when a region is the JOB SCOPE in the title.
+# "US Oncology", "US Sales", "UK Marketing", "EMEA Sales" = job is for that market, not worldwide.
+# DO NOT block just "US" alone: "US Company hiring worldwide" and "US English Translator" must still pass.
+# Company location is checked separately, never in title.
+TITLE_REGION_SCOPE = [
+    r"\bus\s+(oncology|sales|marketing|market|operations|business|commercial|growth|partnerships)\b",
+    r"\busa\s+(oncology|sales|marketing|market|operations|business|commercial|growth|partnerships)\b",
+    r"\buk\s+(sales|marketing|market|operations|business|commercial|growth|partnerships)\b",
+    r"\beu\s+(sales|marketing|market|operations|business|commercial|growth|partnerships)\b",
+    r"\beurope(an)?\s+(sales|marketing|market|operations|business|commercial|growth|partnerships)\b",
+    r"\bemea\b",
+    r"\bapac\b",
+    r"\blatam\b",
 ]
 
 BETTER_SOURCES = ["remoteok", "remotive"]
@@ -292,6 +311,12 @@ def is_worldwide(job):
     loc = (job.get("location") or "").lower()
     for bad in NON_WORLDWIDE:
         if bad in loc:
+            return False
+    # --- ONLY ADDED HERE in is_worldwide: title region-scope check ---
+    # Title only, not company. Company can be in US/UK/EU and still hire worldwide.
+    title_text = (job.get("title") or "").lower()
+    for pat in TITLE_REGION_SCOPE:
+        if re.search(pat, title_text):
             return False
     desc_text = ((job.get("title") or "") + " " + (job.get("desc") or "")).lower()
     for pat in RESTRICTED_IN_DESC:
