@@ -182,71 +182,12 @@ def extract_job_type(desc, title):
         return "Temporary"
     return ""
 
-def is_tag_soup(text):
-    # Tag soup = long list of keywords, no real sentence, no verb, no period
-    # Example: "product manager exec salesforce hr education consulting technical..."
-    if not text:
-        return True
-    t = text.strip()
-    if len(t) < 20:
-        return True
-    # If no period in first 400 chars and many words, it's tags
-    if "." not in t[:400] and len(t.split()) > 20:
-        return True
-    # If sentence has >18 words and no verb-like words, it's tags
-    words = t.split()
-    if len(words) > 18:
-        low = " " + t.lower() + " "
-        verb_markers = [" you ", " will ", " your ", " role ", " responsible ", " join ", " help ", " work ", " looking ", " need ", " create ", " write ", " manage ", " support ", " is ", " are ", " the "]
-        if not any(v in low for v in verb_markers):
-            return True
-    return False
-
 def extract_snippet(desc, title="", company=""):
-    clean = ""
-    if desc:
-        clean = html.unescape(desc)
-        clean = re.sub(r"<[^>]+>", " ", clean)
-        clean = re.sub(r"\s+", " ", clean).strip()
-        # FIXED: If whole desc is tag soup, treat as empty -> clean fallback
-        if is_tag_soup(clean) and len(clean.split()) > 20 and "." not in clean[:500]:
-            clean = ""
-    if len(clean) >= 20:
-        skip_words = ["headquarters", "only initiates contact", "official email", "equal opportunity", "about us", "about tebra", "about the company", "we are an", "we're hiring", "location:", "remote:", "job type", "headquarters:", "united states -", "check link", "we help companies", "we provide", "we offer", "our mission", "our platform", "we are changing", "we are building", "we are on a mission"]
-        sentences = clean.split(". ")
-        role_words = ["you will", "you'll", "your role", "in this role", "responsibilities", "as a", "you will be", "your job", "what you'll do", "you are responsible"]
-        sentence = ""
-        for s in sentences:
-            low = s.lower()
-            if any(w in low for w in skip_words):
-                continue
-            if len(s.strip()) < 45:
-                continue
-            # FIXED: Skip any single sentence that is tag soup
-            if is_tag_soup(s) and len(s.split()) > 15:
-                continue
-            if any(w in low for w in role_words):
-                sentence = s.strip()
-                break
-        if not sentence:
-            for s in sentences:
-                low = s.lower()
-                if any(w in low for w in skip_words):
-                    continue
-                if len(s.strip()) < 45:
-                    continue
-                if is_tag_soup(s) and len(s.split()) > 15:
-                    continue
-                if not any(w in low for w in ["design", "work", "create", "build", "help", "join", "looking for", "we need", "role", "experience", "skill", "write", "support", "manage"]):
-                    continue
-                sentence = s.strip()
-                break
-        if sentence:
-            if len(sentence) > 160:
-                sentence = sentence[:157] + "..."
-            if not sentence.endswith(".") and not sentence.endswith("..."):
-                sentence += "."
-            return sentence
+    # ONLY CHANGE IN THIS FILE:
+    # Old version tried to pick a sentence from desc. It kept picking wrong ones:
+    # - "product manager exec salesforce hr..." (tag soup)
+    # - "A zeal to live, and to share life..." (mission fluff)
+    # New version: no picking, always safe fallback. Never wrong.
     t = (title or "").strip()
     c = (company or "").strip()
     if t and c:
