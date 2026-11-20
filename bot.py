@@ -1,7 +1,6 @@
-# RemoteJobsHiringNow - V7 - NO "FREE" word, + Deadline detection
-# Bot: 1 REMOTE JOB every 5h + 1 ad per day. Paid posts MANUAL only.
+# RemoteJobsHiringNow - V8 - Freelancer jobs only, short post, no repeat
 import os, json, requests, html, random, re, sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
@@ -12,11 +11,53 @@ if not CHANNEL_ID:
 ADMIN = "@dantez4u"
 MAX_AGE_DAYS = 30
 
-print(f"DEBUG: BOT_TOKEN exists? {bool(BOT_TOKEN)} len={len(BOT_TOKEN)}")
-print(f"DEBUG: CHANNEL_ID = {CHANNEL_ID}")
 if not BOT_TOKEN:
     print("ERROR: BOT_TOKEN empty")
     sys.exit(1)
+
+# --- FREELANCER CATEGORIES ONLY - In rotation order ---
+# Bot will go: Writing -> Support -> Data Entry -> Social Media -> Design -> VA -> Marketing -> Translation -> ... then repeat
+# It will NEVER post same category twice in a row, and will try to avoid last 10 categories
+FREELANCER_CATS = [
+    "Writing",
+    "Customer Support",
+    "Data Entry",
+    "Social Media",
+    "Design",
+    "Virtual Assistant",
+    "Marketing",
+    "Translation",
+    "Transcription",
+    "Sales",
+    "Admin",
+    "Video Editing",
+]
+
+# Map keywords -> category. If title matches none, skip it (don't post engineers)
+CAT_KEYWORDS = {
+    "Writing": ["writer", "writing", "copywriter", "content writer", "blog", "article", "editor", "proofread", "ghostwriter"],
+    "Customer Support": ["customer support", "support agent", "support specialist", "help desk", "customer service", "chat support", "customer success"],
+    "Data Entry": ["data entry", "data clerk", "data processing", "data annotation", "labeling", "data collection"],
+    "Social Media": ["social media", "community manager", "social media manager", "content creator", "tiktok", "instagram"],
+    "Design": ["graphic design", "designer", "canva", "logo", "illustrator", "photoshop", "ui design", "thumbnail"],
+    "Virtual Assistant": ["virtual assistant", "personal assistant", "executive assistant", "admin assistant", "office assistant"],
+    "Marketing": ["marketing", "seo", "email marketing", "digital marketing", "affiliate", "lead generation"],
+    "Translation": ["translator", "translation", "interpreter", "bilingual", "translat"],
+    "Transcription": ["transcription", "transcriber", "caption", "subtitle"],
+    "Sales": ["sales", "sales rep", "appointment setter", "cold caller", "business development", "lead gen"],
+    "Admin": ["administrative", "admin", "bookkeeping", "bookkeeper", "accounting assistant", "receptionist", "scheduling"],
+    "Video Editing": ["video edit", "video editor", "video editing", "youtube editor", "reels editor"],
+}
+
+# --- BLOCK high-professional jobs ---
+BLOCKED = [
+    "senior engineer", "software engineer", "software developer", "full stack", "backend", "frontend",
+    "devops", "data scientist", "machine learning", "ai engineer", "architect", "cto", "principal",
+    "staff engineer", "java developer", "python developer", "react developer", "node", "kubernetes",
+    "cybersecurity", "security engineer", "blockchain", "quant", "phd", "research scientist",
+    "product manager", "engineering manager", "director", "vp ", "head of engineering",
+    "medical", "doctor", "nurse", "lawyer", "attorney", "accountant cpa",
+]
 
 SOURCES = ["remoteok", "remotive", "arbeitnow", "wwr_all", "wwr_design", "jobicy", "remote_co", "himalayas"]
 
@@ -27,6 +68,14 @@ def load_json(name, default):
 
 def save_json(name, data):
     with open(name, "w") as f: json.dump(data, f, indent=2)
+
+def norm_url(u):
+    # Fix repeat bug: https://.../job/ and https://.../job are same job
+    # Also lower case, remove trailing / and ?utm...
+    u = (u or "").strip().lower()
+    u = re.sub(r"\?.*$", "", u)
+    u = u.rstrip("/")
+    return u
 
 def parse_date(raw):
     if not raw: return None
@@ -40,26 +89,6 @@ def parse_date(raw):
     except:
         return None
 
-def extract_deadline(job):
-    # Try to find real deadline in description
-    text = job["desc"] + " " + job["title"]
-    # Patterns: "Deadline: 30 Nov 2026", "Apply by Dec 15", "Closing date: 2026-12-01", "Closes on 15/12/2026"
-    patterns = [
-        r"(deadline|apply by|closing date|closes on|applications close|last date to apply)[\s:]*([0-9]{1,2}[\s\-/][A-Za-z]{3,9}[\s\-/][0-9]{2,4})",
-        r"(deadline|apply by|closing date|closes on)[\s:]*([A-Za-z]{3,9}\s+[0-9]{1,2},?\s+[0-9]{4})",
-        r"(deadline|apply by)[\s:]*([0-9]{4}-[0-9]{2}-[0-9]{2})",
-    ]
-    for pat in patterns:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            return f"⏰ Deadline: {m.group(2).strip()} - Apply before this date"
-    # No deadline in source - estimate from posted date
-    if job.get("posted_date"):
-        posted = job["posted_date"]
-        est = posted + timedelta(days=14)
-        return f"⏰ Deadline: Not listed by company - Apply ASAP. Posted {posted.strftime('%d %b %Y')}, most remote jobs close within 14 days (around {est.strftime('%d %b %Y')}). If you see this after that, check link first - it may be closed."
-    return "⏰ Deadline: Not listed - Apply ASAP. Remote jobs close fast, don't wait."
-
 def fetch_remoteok():
     try:
         r = requests.get("https://remoteok.com/api", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
@@ -67,10 +96,10 @@ def fetch_remoteok():
         for j in r.json():
             if not isinstance(j, dict) or not j.get("position"): continue
             out.append({"title": j.get("position"), "company": j.get("company"), "url": j.get("url"), "location": j.get("location","Remote"), "desc": " ".join(j.get("tags",[])) + " " + str(j.get("description",""))[:800], "salary": f"${j.get('salary_min','')} - ${j.get('salary_max','')}" if j.get("salary_min") else "See link", "source": "RemoteOK", "posted_date": parse_date(j.get("date"))})
-        print(f"RemoteOK fetched {len(out)} jobs")
+        print(f"RemoteOK {len(out)}")
         return out
     except Exception as e:
-        print(f"RemoteOK error: {e}")
+        print(f"RemoteOK error {e}")
         return []
 
 def fetch_remotive():
@@ -79,10 +108,10 @@ def fetch_remotive():
         out = []
         for j in r.json().get("jobs", []):
             out.append({"title": j.get("title"), "company": j.get("company_name"), "url": j.get("url"), "location": j.get("candidate_required_location","Remote"), "desc": j.get("description","")[:800], "salary": j.get("salary") or "See link", "source": "Remotive", "posted_date": parse_date(j.get("publication_date"))})
-        print(f"Remotive fetched {len(out)} jobs")
+        print(f"Remotive {len(out)}")
         return out
     except Exception as e:
-        print(f"Remotive error: {e}")
+        print(f"Remotive error {e}")
         return []
 
 def fetch_arbeitnow():
@@ -91,10 +120,10 @@ def fetch_arbeitnow():
         out = []
         for j in r.json().get("data", []):
             out.append({"title": j.get("title"), "company": j.get("company_name"), "url": j.get("url"), "location": j.get("location") or "Remote", "desc": j.get("description","")[:800], "salary": "See link", "source": "Arbeitnow", "posted_date": parse_date(j.get("created_at"))})
-        print(f"Arbeitnow fetched {len(out)} jobs")
+        print(f"Arbeitnow {len(out)}")
         return out
     except Exception as e:
-        print(f"Arbeitnow error: {e}")
+        print(f"Arbeitnow error {e}")
         return []
 
 def fetch_rss(url, source_name):
@@ -108,10 +137,10 @@ def fetch_rss(url, source_name):
             desc = re.sub("<[^>]+>", " ", item.findtext("description") or "")[:800]
             pub = item.findtext("pubDate") or ""
             out.append({"title": title, "company": source_name, "url": link, "location": "Remote", "desc": desc, "salary": "See link", "source": source_name, "posted_date": parse_date(pub)})
-        print(f"{source_name} RSS fetched {len(out)} jobs")
+        print(f"{source_name} {len(out)}")
         return out
     except Exception as e:
-        print(f"{source_name} RSS error: {e}")
+        print(f"{source_name} error {e}")
         return []
 
 FETCHERS = {
@@ -125,166 +154,170 @@ FETCHERS = {
     "himalayas": lambda: fetch_rss("https://himalayas.app/jobs/rss", "Himalayas"),
 }
 
-def get_category(title):
-    t = title.lower()
-    t = re.sub(r"\b(remote|junior|senior|lead|principal|part-time|full-time|contract)\b", "", t)
-    t = re.sub(r"[^a-z ]", " ", t)
-    words = [w for w in t.split() if len(w) > 2]
-    if len(words) >= 2: return " ".join(words[:2]).title()
-    return words[0].title() if words else "General"
+def get_freelancer_category(title, desc):
+    text = (title + " " + desc).lower()
+    # 1. Block engineers / senior roles first
+    for b in BLOCKED:
+        if b in text:
+            return None
+    # 2. Match to freelancer category
+    for cat, kws in CAT_KEYWORDS.items():
+        for kw in kws:
+            if kw in text:
+                return cat
+    return None  # Not a freelancer job - skip it
 
-def is_similar(cat1, cat2):
-    return len(set(cat1.lower().split()) & set(cat2.lower().split())) > 0
-
-def reject_reason(job, posted):
-    if job["url"] in posted: return "repeat"
+def reject_reason(job, posted_norm):
+    if norm_url(job["url"]) in posted_norm:
+        return "repeat-url"
+    if not job["url"] or len(job["url"]) < 10:
+        return "no-url"
     text = (job["title"] + " " + job["desc"]).lower()
-    if any(x in text for x in ["position filled", "job is closed", "applications closed", "no longer accepting applications", "this job has expired", "position has been filled"]):
-        return "really-closed"
+    if any(x in text for x in ["position filled", "job is closed", "applications closed", "no longer accepting applications"]):
+        return "closed"
     if any(x in text for x in ["pay to apply", "pay fee", "training fee", "activation fee"]):
         return "scam-fee"
     if job.get("posted_date"):
         age = (datetime.now(timezone.utc) - job["posted_date"]).days
-        if age > MAX_AGE_DAYS: return f"too-old-{age}d"
-    if not job["url"] or len(job["url"]) < 10: return "no-url"
+        if age > MAX_AGE_DAYS:
+            return f"too-old-{age}d"
     return None
 
 def analyze_job(job):
     text = (job["title"] + " " + job["desc"] + " " + job["location"]).lower()
     if any(x in text for x in ["us only", "united states only", "us-based", "must be in us", "usa only"]):
-        who = "🇺🇸 US ONLY - Do not apply if outside US"
-        score = 2
-    elif any(x in text for x in ["eu only", "europe only", "uk only", "must be in eu", "must be in uk"]):
-        who = "🇪🇺 EU / UK ONLY"
-        score = 2
-    elif any(x in text for x in ["worldwide", "global", "anywhere", "all countries"]):
-        who = "🌍 Worldwide - All Countries Can Apply ✅"
-        score = 10
-    else:
-        who = "🌍 Worldwide - All Countries (Check link for details) ✅"
-        score = 6
-    if job.get("posted_date"):
-        age = (datetime.now(timezone.utc) - job["posted_date"]).days
-        if age <= 1: score += 5
-        elif age <= 3: score += 3
-    return who, score
+        return "🇺🇸 US ONLY", 2
+    if any(x in text for x in ["eu only", "europe only", "uk only", "must be in eu", "must be in uk"]):
+        return "🇪🇺 EU / UK ONLY", 2
+    if any(x in text for x in ["worldwide", "global", "anywhere", "all countries"]):
+        return "🌍 Worldwide - All Can Apply ✅", 10
+    return "🌍 Worldwide - Check link ✅", 6
 
 def send_to_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    resp = requests.post(url, data={"chat_id": CHANNEL_ID, "text": text, "parse_mode": "HTML"}, timeout=20)
-    print(f"TELEGRAM RESPONSE: {resp.status_code} - {resp.text[:300]}")
+    resp = requests.post(url, data={"chat_id": CHANNEL_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=20)
+    print(f"TELEGRAM: {resp.status_code} - {resp.text[:300]}")
     return resp
 
 def main():
-    state = load_json("state.json", {"last_source": -1, "last_categories": [], "ad_posted_today": ""})
-    posted = set(load_json("posted.json", []))
-    print(f"Posted memory: {len(posted)} jobs")
+    state = load_json("state.json", {"last_source": -1, "last_categories": [], "ad_posted_today": "", "last_title": ""})
+    # Load posted as NORMALIZED urls - fixes repeat when same job has / vs no /
+    posted_raw = load_json("posted.json", [])
+    posted_norm = set([norm_url(u) for u in posted_raw])
+    print(f"Posted memory: {len(posted_norm)} jobs")
     today = datetime.now().strftime("%Y-%m-%d")
     hour = datetime.now(timezone.utc).hour
 
+    # AD - 1x per day, short, NO price
     if hour == 6 and state.get("ad_posted_today") != today:
-        ad_text = f"""📢 <b>ADVERTISE HERE - TO GLOBAL JOB SEEKERS</b>
+        ad = f"""📢 <b>ADVERTISE HERE</b>
 
-Want your skills posted here?
-Are you hiring?
-Do you have a job / service / course for job seekers?
+Hiring? Have a job / service for job seekers?
+Your post will be seen by job seekers worldwide.
 
-👉 <b>DM Admin: {ADMIN}</b>
-💬 Message Admin for details - We will agree in DM
-
-⚠️ We never charge to APPLY for a job. You only pay if YOU want to advertise.
-
-Share this channel 👉 https://t.me/RemoteJobsHiringNow
+👉 DM Admin: {ADMIN}
 """
-        resp = send_to_telegram(ad_text)
+        resp = send_to_telegram(ad)
         if resp.status_code == 200:
             state["ad_posted_today"] = today
             save_json("state.json", state)
         return
 
-    start_idx = (state.get("last_source", -1) + 1) % len(SOURCES)
-    ordered_sources = SOURCES[start_idx:] + SOURCES[:start_idx]
-    print(f"Will try sources: {ordered_sources}")
     last_cats = state.get("last_categories", [])
-    best_overall = None
-    best_score = -999
-    best_cat = ""
-    best_source_idx = start_idx
+    # --- PICK NEXT CATEGORY IN ROTATION ---
+    # Find first category in FREELANCER_CATS that is NOT in last 10
+    target_cat = None
+    for cat in FREELANCER_CATS:
+        if cat not in last_cats[-10:]:
+            target_cat = cat
+            break
+    if not target_cat:
+        # All used recently, start again from first
+        target_cat = FREELANCER_CATS[0]
+    print(f"Target category this run: {target_cat} | Last cats: {last_cats[-5:]}")
 
-    for source_name in ordered_sources:
+    start_idx = (state.get("last_source", -1) + 1) % len(SOURCES)
+    ordered = SOURCES[start_idx:] + SOURCES[:start_idx]
+
+    candidates = []
+    candidates_any = []
+
+    for source_name in ordered:
         jobs = FETCHERS[source_name]()
         random.shuffle(jobs)
         for job in jobs:
-            if reject_reason(job, posted): continue
-            cat = get_category(job["title"])
-            if any(is_similar(cat, old) for old in last_cats): continue
+            if reject_reason(job, posted_norm):
+                continue
+            cat = get_freelancer_category(job["title"], job["desc"])
+            if not cat:
+                continue  # Not freelancer job - skip engineer etc.
+            # Keep all freelancer jobs, but prefer target category
             who, score = analyze_job(job)
-            if score > best_score:
-                best_score = score
-                best_overall = (job, who)
-                best_cat = cat
-                best_source_idx = SOURCES.index(source_name)
-        if best_overall and best_score >= 10:
-            print(f"Found good job from {source_name}")
+            if cat == target_cat:
+                candidates.append((job, who, cat, score))
+            else:
+                candidates_any.append((job, who, cat, score))
+        # If we found 3+ jobs for target category, stop searching - enough
+        if len(candidates) >= 3:
+            print(f"Found {len(candidates)} for {target_cat} from {source_name}, stopping")
             break
-        print(f"After {source_name}: best={best_overall[0]['title'] if best_overall else 'None'}")
 
-    if not best_overall:
-        print("Fallback - any open job")
-        for source_name in ordered_sources:
-            jobs = FETCHERS[source_name]()
-            for job in jobs:
-                if reject_reason(job, posted): continue
-                who, score = analyze_job(job)
-                best_overall = (job, who)
-                best_cat = get_category(job["title"])
-                best_source_idx = SOURCES.index(source_name)
-                break
-            if best_overall: break
+    # Prefer target category, else any freelancer category (but NOT last category)
+    chosen = None
+    if candidates:
+        # RANDOM pick among top candidates - NOT always #1, this stops repeat when you run twice quickly
+        random.shuffle(candidates)
+        chosen = candidates[0]
+    else:
+        print(f"No job for {target_cat}, trying any freelancer category except last")
+        # Filter out last category
+        filtered = [c for c in candidates_any if c[2] not in last_cats[-3:]]
+        if filtered:
+            random.shuffle(filtered)
+            chosen = filtered[0]
+        elif candidates_any:
+            random.shuffle(candidates_any)
+            chosen = candidates_any[0]
 
-    if not best_overall:
-        print("No open job from ANY source")
+    if not chosen:
+        print("No freelancer job found from any source")
         return
 
-    job, who = best_overall
+    job, who, cat, score = chosen
+    # Extra safety: if title same as last posted title, skip - this was your repeat bug
+    if job["title"].strip().lower() == state.get("last_title", "").strip().lower():
+        print(f"SKIP: Same title as last post: {job['title']}")
+        return
+
     date_str = ""
     if job.get("posted_date"):
         date_str = f"\n📅 Posted: {job['posted_date'].strftime('%d %b %Y')}"
-    deadline_str = extract_deadline(job)
+    # If no date, don't lie - just don't show date line
 
-    # REMOVED "FREE" - Now "REMOTE JOB" = paid job, not free labour
-    message = f"""🌍 <b>REMOTE JOB - {best_cat}</b> {date_str}
+    # SHORT POST - "Never pay" appears ONCE only, at bottom
+    message = f"""🌍 <b>REMOTE JOB - {cat}</b>{date_str}
 
 📌 <b>{html.escape(job['title'])}</b>
 🏢 {html.escape(job['company'] or 'Company')}
 📍 {html.escape(job['location'])}
 💰 {html.escape(job['salary'])}
-🏷️ Source: {job['source']}
 
 {who}
-{deadline_str}
-
-<b>HOW TO APPLY:</b>
-1. Tap Apply link below
-2. Click Apply on company site
-3. Upload CV + fill form (2-5 mins)
-4. No fee to apply - If they ask for money, it's SCAM, leave it
 
 👉 <b>Apply Here:</b> {job['url']}
 
 ⚠️ Never pay to apply for a job.
-📢 Want your skills / hiring post here? DM Admin {ADMIN}
-Share 👉 https://t.me/RemoteJobsHiringNow
 """
     resp = send_to_telegram(message)
     if resp.status_code == 200:
-        posted.add(job["url"])
-        last_cats.append(best_cat)
+        posted_raw.append(job["url"])
+        last_cats.append(cat)
         state["last_categories"] = last_cats[-15:]
-        state["last_source"] = best_source_idx
+        state["last_source"] = SOURCES.index(job["source"]) if job["source"] in SOURCES else start_idx
+        state["last_title"] = job["title"]
         save_json("state.json", state)
-        save_json("posted.json", list(posted))
-        print(f"SUCCESS: Posted {best_cat} from {job['source']}")
+        save_json("posted.json", posted_raw)
+        print(f"SUCCESS: {cat} - {job['title']}")
 
 if __name__ == "__main__":
     main()
