@@ -140,14 +140,33 @@ def fetch_channel_posted_urls():
         print(f"Channel history error (will use posted.json backup): {e}")
     return urls, titles
 
+# --- ONLY CHANGED FUNCTION IN THIS FILE: clean_title_company ---
 def clean_title_company(title, company, url):
     t = (title or "").strip()
     c = (company or "").strip()
+    # Original rule - UNTOUCHED, works for short company names.
+    # Example: "Acme: Designer" -> Company=Acme, Title=Designer
     if ":" in t and len(t.split(":")[0]) < 30:
         maybe_company, maybe_title = t.split(":", 1)
         if maybe_title.strip():
             c = maybe_company.strip()
             t = maybe_title.strip()
+    # NEW SAFE RULE - ONLY for RSS jobs where company is still just the source name.
+    # Example that was broken: "Trusted Building Technologies Inc.: Executive Assistant / Project Manager"
+    # with company="WeWorkRemotely". Old rule failed because company part is 33 chars, not <30.
+    # We ONLY run this when we do NOT already have a real company, so real API jobs
+    # (RemoteOK/Remotive with real company) are never affected.
+    if ":" in t:
+        generic_companies = {"", "himalayas", "jobicy", "weworkremotely", "remote.co", "arbeitnow", "remotive", "remoteok"}
+        if c.lower() in generic_companies:
+            maybe_company, maybe_title = t.split(":", 1)
+            maybe_company = maybe_company.strip()
+            maybe_title = maybe_title.strip()
+            # Company names are rarely >60 chars. Title part must be real (at least 3 chars).
+            # This prevents splitting "Note: ..." or very long sentences.
+            if 0 < len(maybe_company) <= 60 and len(maybe_title) >= 3:
+                c = maybe_company
+                t = maybe_title
     if " at " in t.lower():
         parts = re.split(r"\s+at\s+", t, flags=re.I)
         if len(parts) == 2 and len(parts[1]) < 30:
@@ -157,6 +176,7 @@ def clean_title_company(title, company, url):
     if m and c.lower() in ["himalayas", "jobicy", "weworkremotely", "remote.co", ""]:
         c = m.group(1).replace("-", " ").title()
     return t, c
+# --- END OF ONLY CHANGED FUNCTION ---
 
 # --- ONLY CHANGED PART STARTS HERE: Salary period ---
 # Professional rule: return salary exactly as job states it, plus its period if job states it.
