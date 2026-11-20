@@ -1,6 +1,9 @@
 # RemoteJobsHiringNow - FINAL v2 - Checked 3 times
 # Rules:
-# 1. Fully Remote + Worldwide ONLY - checks Description, not just Location
+# 1. Remote ONLY - say what the source platform says about location.
+#    If source says Worldwide, say Worldwide. If source says a place, say Only that place.
+#    (e.g. USA, Philippines, Germany, Kenya, Brazil - any place, not just those examples)
+#    NEVER invent Worldwide when source only says Remote.
 # 2. Better sources first (RemoteOK, Remotive), Backup only if empty
 # 3. Freelancer = skill-based, NOT engineering/professional degree jobs
 #    ALLOWED: Representative, Manager, Senior, Executive, Lead - if remote + worldwide
@@ -328,6 +331,57 @@ def is_worldwide(job):
         return True
     return False
 
+# --- ONLY NEW FUNCTION IN THIS FILE: get_location_label - FULLY GENERIC, NO COUNTRY LIST ---
+# Say what the source platform says. Never invent Worldwide.
+# USA / Philippines were only examples. This works for ANY place.
+# Returns (location_line, eligibility_line) for the Telegram message.
+#   location="Worldwide" -> ("Worldwide", "Worldwide - All Can Apply ✅")
+#   location="Germany" -> ("Only Germany", "Only Germany Can Apply")
+#   location="Kenya" -> ("Only Kenya", "Only Kenya Can Apply")
+#   location="Brazil" -> ("Only Brazil", "Only Brazil Can Apply")
+#   location="Remote" + no region info -> ("Remote", "Check Apply link for who can apply")
+def get_location_label(job):
+    loc = (job.get("location") or "").strip()
+    loc_low = loc.lower()
+    desc_text = ((job.get("title") or "") + " " + (job.get("desc") or "")).lower()
+    # 1. Source explicitly says Worldwide / Global / Anywhere -> Worldwide, only then.
+    if any(x in loc_low for x in ["worldwide", "global", "anywhere"]):
+        return ("Worldwide", "Worldwide - All Can Apply ✅")
+    # 2. Source location names ANY specific place -> Only that place, word-for-word.
+    # No country list. Whatever source wrote, we repeat it.
+    # Skip only the non-place values: blank, "Remote", "Remote - Worldwide".
+    if loc and loc_low not in ("", "remote", "remote - worldwide"):
+        place = loc.strip()
+        # Tidy display only, meaning unchanged.
+        low_place = place.lower()
+        if low_place in ("usa", "us", "u.s.", "u.s.a.", "united states"):
+            place = "US"
+        elif low_place in ("uk", "u.k.", "united kingdom"):
+            place = "UK"
+        elif low_place in ("uae",):
+            place = "UAE"
+        else:
+            # Title-case for display: "philippines" -> "Philippines", "south africa" -> "South Africa"
+            place = place.title()
+        return (f"Only {place}", f"Only {place} Can Apply")
+    # 3. Location is just "Remote" but description clearly says "<Place> only" -> use that place.
+    # Generic: any 1-2 word place, not a hard-coded country list.
+    # Reject generic words so we never pick up "candidates only" / "remote only" etc.
+    stopwords = {"candidates", "applicants", "remote", "online", "fully", "all", "those", "this", "that", "eligible", "qualified", "based", "located", "residing"}
+    m = re.search(r"\b([a-z]+(?:\s+[a-z]+)?)\s+only\b", desc_text)
+    if m:
+        place_raw = m.group(1).strip()
+        words = place_raw.split()
+        if 1 <= len(words) <= 2 and all(w not in stopwords for w in words) and len(place_raw) <= 30:
+            place = place_raw.title()
+            if place.lower() in ("usa", "us", "united states"):
+                place = "US"
+            elif place.lower() in ("uk", "united kingdom"):
+                place = "UK"
+            return (f"Only {place}", f"Only {place} Can Apply")
+    # 4. Source only says Remote / blank -> say Remote, do NOT invent Worldwide.
+    return ("Remote", "Check Apply link for who can apply")
+
 def fetch_remoteok():
     try:
         r = requests.get("https://remoteok.com/api", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
@@ -417,8 +471,10 @@ def reject_reason(job, posted_urls, posted_ids, channel_titles, max_age=MAX_AGE_
     age = get_age_days(job)
     if age > max_age:
         return f"too-old-{age}d"
-    if not is_worldwide(job):
-        return "not-worldwide-desc-or-location"
+    # --- ONLY CHANGED HERE in reject_reason: no longer reject for region ---
+    # Old: if not worldwide, reject. That meant a real "Only Philippines" job could never post.
+    # New: post it, but label it correctly with get_location_label(). Location honesty is in the label, not in rejection.
+    # is_worldwide() is kept for reference, but no longer used to reject.
     if not is_english(job["title"], job["desc"]):
         return "not-english"
     return None
@@ -536,7 +592,10 @@ def main():
     type_line = f"\n🕒 Type: {job_type}" if job_type else ""
     snippet = extract_snippet(job.get("desc", ""), job.get("title", ""), job.get("company", ""))
     snippet_line = f"\n📋 {html.escape(snippet)}" if snippet else ""
-    message = f"""🌍 <b>REMOTE JOB - {cat}</b>{date_str}\n\n📌 <b>{html.escape(job['title'])}</b>\n🏢 {html.escape(job['company'] or 'Company')}\n📍 Worldwide{salary_line}{type_line}{snippet_line}\n\n🌍 Worldwide - All Can Apply ✅\n\n👉 <b>Apply Here:</b> {job['url']}\n\n⚠️ Never pay to apply for a job.\n\n📣 Share with a friend who needs a job 👉 {SHARE_LINK}\n"""
+    # --- ONLY CHANGED HERE in main(): location label comes from source, not hardcoded Worldwide ---
+    location_label, eligibility_label = get_location_label(job)
+    location_line = f"\n📍 {html.escape(location_label)}"
+    message = f"""🌍 <b>REMOTE JOB - {cat}</b>{date_str}\n\n📌 <b>{html.escape(job['title'])}</b>\n🏢 {html.escape(job['company'] or 'Company')}{location_line}{salary_line}{type_line}{snippet_line}\n\n🌍 {html.escape(eligibility_label)}\n\n👉 <b>Apply Here:</b> {job['url']}\n\n⚠️ Never pay to apply for a job.\n\n📣 Share with a friend who needs a job 👉 {SHARE_LINK}\n"""
     resp = send_to_telegram(message)
     if resp.status_code == 200:
         posted_data.append({"url": job["url"], "id": make_id(job), "title": job["title"], "date": today, "category": cat, "source": source_name})
