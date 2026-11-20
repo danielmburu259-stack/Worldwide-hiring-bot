@@ -1,4 +1,6 @@
 name: Job Poster Every 5 Hours
+permissions:
+  contents: write
 on:
   schedule:
     - cron: '0 */5 * * *'
