@@ -1,4 +1,4 @@
-# RemoteJobsHiringNow - FINAL BEST - Do Not Change
+# RemoteJobsHiringNow - FINAL - Worldwide + Salary Required + English Only
 import os, json, requests, html, random, re, sys, hashlib
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
@@ -26,7 +26,7 @@ CAT_KEYWORDS = {
     "Design": ["graphic design", "designer", "canva", "logo", "illustrator", "photoshop", "ui design", "thumbnail"],
     "Virtual Assistant": ["virtual assistant", "personal assistant", "executive assistant", "admin assistant", "office assistant"],
     "Marketing": ["marketing", "seo", "email marketing", "digital marketing", "affiliate", "lead generation"],
-    "Translation": ["translator", "translation", "interpreter", "bilingual", "transcription"],
+    "Translation": ["translator", "translation", "interpreter", "bilingual"],
     "Transcription": ["transcription", "transcriber", "caption", "subtitle"],
     "Sales": ["sales", "sales rep", "appointment setter", "cold caller", "business development", "lead gen"],
     "Admin": ["administrative", "admin", "bookkeeping", "bookkeeper", "receptionist", "scheduling"],
@@ -44,9 +44,13 @@ BLOCKED_IN_TITLE = [
     "graduate", "internship", "intern", "2027", "2028", "apprentice",
     "senior", "lead", "manager", "supervisor",
     "underwriting", "underwriter", "insurance", "finance", "banking", "bank", "loan", "mortgage", "consultant", "field",
+    "steuerberatung", "steuer", "m/w/d",
 ]
 
 BLOCKED_IN_DESC = ["pay to apply", "pay fee", "training fee", "activation fee", "membership fee", "position filled", "job is closed", "applications closed", "no longer accepting"]
+
+# Locations that are NOT worldwide - SKIP these jobs
+NON_WORLDWIDE = ["(eu)", "europe", "germany", "berlin", "france", "netherlands", "spain", "switzerland", "swiss", "zurich", "austria", "belgium", "(uk)", "united kingdom", "london", "england", " uk", "(us)", "united states", "usa", "america", "new york", "california", "texas", " us", "canada", "australia", "india", "philippines", "nigeria", "kenya", "south africa"]
 
 SOURCES = ["remoteok", "remotive", "arbeitnow", "wwr_all", "wwr_design", "jobicy", "remote_co", "himalayas"]
 
@@ -86,19 +90,16 @@ def is_fresh(job): return get_age_days(job) <= PREFERRED_AGE_DAYS
 def clean_title_company(title, company, url):
     t = (title or "").strip()
     c = (company or "").strip()
-    # Fix "Tebra: Product Designer" -> Title=Product Designer, Company=Tebra
     if ":" in t and len(t.split(":")[0]) < 30:
         maybe_company, maybe_title = t.split(":", 1)
         if maybe_title.strip():
             c = maybe_company.strip()
             t = maybe_title.strip()
-    # Fix "Product Designer at Tebra"
     if " at " in t.lower():
         parts = re.split(r"\s+at\s+", t, flags=re.I)
         if len(parts) == 2 and len(parts[1]) < 30:
             t = parts[0].strip()
             c = parts[1].strip().title()
-    # Fix company from Himalayas URL: /companies/manulife/jobs/...
     m = re.search(r"/companies/([^/]+)/", url or "")
     if m and c.lower() in ["himalayas", "jobicy", "weworkremotely", "remote.co", ""]:
         c = m.group(1).replace("-", " ").title()
@@ -123,14 +124,38 @@ def extract_job_type(desc, title):
 
 def extract_snippet(desc):
     if not desc: return ""
-    clean = re.sub(r"\s+", " ", desc).strip()
+    # FIX: Remove ALL HTML tags including <p style="...">, decode entities
+    clean = html.unescape(desc)
+    clean = re.sub(r"<[^>]+>", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
     clean = re.sub(r"^(about.*?:|job description:?|description:?)\s*", "", clean, flags=re.I)
     if len(clean) < 20: return ""
-    # First sentence, max 160 chars
     sentence = clean.split(". ")[0].strip()
     if len(sentence) > 160: sentence = sentence[:157] + "..."
     if not sentence.endswith(".") and not sentence.endswith("..."): sentence += "."
     return sentence
+
+def is_english(title, desc):
+    text = (title or "") + " " + (desc or "")[:500]
+    # German / non-English signals
+    if re.search(r"[äöüßÄÖÜ]", text): return False
+    german_words = [" und ", " die ", " der ", " für ", " mit ", " von ", " bist ", " hast ", " wirst ", " gerne ", " neue ", " deine ", " unser", "steuer"]
+    low = " " + text.lower() + " "
+    for w in german_words:
+        if w in low: return False
+    return True
+
+def is_worldwide(job):
+    loc = (job.get("location") or "").lower()
+    for bad in NON_WORLDWIDE:
+        if bad in loc: return False
+    # Location must be worldwide / remote / global / anywhere / empty
+    if loc.strip() in ["", "remote", "worldwide", "global", "anywhere", "remote - worldwide"]:
+        return True
+    if any(x in loc for x in ["worldwide", "global", "anywhere", "remote"]):
+        return True
+    # If location is a specific city/country not in list, be strict: skip unless it says worldwide
+    return False
 
 def fetch_remoteok():
     try:
@@ -190,7 +215,6 @@ FETCHERS = {"remoteok": fetch_remoteok, "remotive": fetch_remotive, "arbeitnow":
 
 def get_freelancer_category(title, desc):
     t = (title or "").lower()
-    # FIXED: Word-boundary matching - "writing" will NOT match "underwriting"
     for b in BLOCKED_IN_TITLE:
         if re.search(r"\b" + re.escape(b) + r"\b", t):
             return None
@@ -209,16 +233,12 @@ def reject_reason(job, posted_urls, posted_ids, max_age=MAX_AGE_DAYS):
         if bad in text: return f"blocked-{bad}"
     age = get_age_days(job)
     if age > max_age: return f"too-old-{age}d"
+    # YOUR RULES: Worldwide only, Salary required, English only
+    if not is_worldwide(job): return "not-worldwide"
+    salary = (job.get("salary") or "").strip() or extract_salary(job.get("desc", ""))
+    if not salary: return "no-salary"
+    if not is_english(job["title"], job["desc"]): return "not-english"
     return None
-
-def get_location_line(job):
-    loc = (job["location"] or "Remote").strip()
-    low = loc.lower()
-    if any(x in low for x in ["(uk)", "united kingdom", " london", "england", " uk"]): return "📍 Remote (UK) - Check link if your country can apply", "🇬🇧 UK Based - Check Link"
-    if any(x in low for x in ["(us)", "united states", "usa", "america", "new york", "california", "texas", " us"]): return "📍 Remote (US) - Check link if your country can apply", "🇺🇸 US Based - Check Link"
-    if any(x in low for x in ["(eu)", "europe", "germany", "france", "netherlands", "spain", "berlin", "switzerland", "swiss", "zurich", "austria", "belgium"]): return "📍 Remote (EU) - Check link if your country can apply", "🇪🇺 EU Based - Check Link"
-    if any(x in low for x in ["worldwide", "global", "anywhere", "remote"]): return "📍 Worldwide", "🌍 Worldwide - All Can Apply ✅"
-    return f"📍 {loc}", "🌍 Check Link ✅"
 
 def send_to_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -256,7 +276,7 @@ def main():
     ordered = [s for s in ordered if s != last_source_name]
     print(f"Source order (last source removed): {ordered}")
     candidates_target = []; candidates_any = []
-    print("PASS 1: Fresh 2 days")
+    print("PASS 1: Fresh 2 days, Worldwide + Salary + English")
     for source_name in ordered:
         jobs = FETCHERS[source_name]()
         random.shuffle(jobs)
@@ -289,21 +309,20 @@ def main():
             if group:
                 random.shuffle(group); chosen = group[0]; print(f"Chose NEXT-ORDER: {chosen[1]} from {chosen[2]}"); break
     if not chosen:
-        print("No freelancer job found"); return
+        print("No job found that is Worldwide + Salary + English - SKIPPING this slot, better to post nothing than a bad job")
+        return
     job, cat, source_name = chosen
     if job["title"].strip().lower() == state.get("last_title", "").strip().lower():
         print("SKIP: Same title"); return
     date_str = ""
     if job.get("posted_date"): date_str = f"\n📅 Posted: {job['posted_date'].strftime('%d %b %Y')}"
     else: date_str = "\n📅 Posted: Recently"
-    loc_line, who_line = get_location_line(job)
     salary = (job.get("salary") or "").strip() or extract_salary(job.get("desc", ""))
-    salary_line = f"\n💰 Salary: {html.escape(salary)}" if salary else "\n💰 Salary: Not listed - Check link"
     job_type = extract_job_type(job.get("desc", ""), job.get("title", ""))
     type_line = f"\n🕒 Type: {job_type}" if job_type else ""
     snippet = extract_snippet(job.get("desc", ""))
     snippet_line = f"\n📋 {html.escape(snippet)}" if snippet else ""
-    message = f"""🌍 <b>REMOTE JOB - {cat}</b>{date_str}\n\n📌 <b>{html.escape(job['title'])}</b>\n🏢 {html.escape(job['company'] or 'Company')}\n{loc_line}{salary_line}{type_line}{snippet_line}\n\n{who_line}\n\n👉 <b>Apply Here:</b> {job['url']}\n\n⚠️ Never pay to apply for a job.\n\n📣 Share with a friend who needs a job 👉 {SHARE_LINK}\n"""
+    message = f"""🌍 <b>REMOTE JOB - {cat}</b>{date_str}\n\n📌 <b>{html.escape(job['title'])}</b>\n🏢 {html.escape(job['company'] or 'Company')}\n📍 Worldwide\n💰 Salary: {html.escape(salary)}{type_line}{snippet_line}\n\n🌍 Worldwide - All Can Apply ✅\n\n👉 <b>Apply Here:</b> {job['url']}\n\n⚠️ Never pay to apply for a job.\n\n📣 Share with a friend who needs a job 👉 {SHARE_LINK}\n"""
     resp = send_to_telegram(message)
     if resp.status_code == 200:
         posted_data.append({"url": job["url"], "id": make_id(job), "title": job["title"], "date": today, "category": cat, "source": source_name})
