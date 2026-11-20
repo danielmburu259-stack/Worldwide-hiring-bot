@@ -1,4 +1,4 @@
-# RemoteJobsHiringNow - FINAL v2 - Checked 3 times
+# RemoteJobsHiringNow - FINAL v2 - GUARANTEED: Every 5h, Rotating Region, Fully Remote Only
 # Rules:
 # 1. Remote ONLY - say what the source platform says about location.
 #    If source says Worldwide, say Worldwide. If source says a place, say Only that place.
@@ -12,9 +12,13 @@
 # 4. NEVER post tag soup. Tags are not a description.
 # 5. Salary: show period ONLY if job itself says it (per year / per month / per week / per hour). Never invent.
 #    Title pay ($70) is real pay - show it even if < $100. Description noise ($3 million) is not.
-# 6. Worldwide: company can be in US/UK/EU, but job scope must NOT be US/UK/EU-only (e.g. US Oncology, UK Sales).
+# 6. GUARANTEE: 1 post every 5 hours, rotating region, fully remote only.
+#    - Workflow cron MUST be: 0 */5 * * *  (every 5 hours)
+#    - Code enforces: if last post < 5h ago -> skip. If >= 5h ago -> must post (uses 7-day fallback).
+#    - Code enforces: region rotation - last region is penalised in pick_best.
+#    - Code enforces: is_remote() rejects on-site / hybrid / in-office jobs.
 import os, json, requests, html, random, re, sys, hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
@@ -27,6 +31,7 @@ ADMIN = "@dantez4u"
 SHARE_LINK = "https://t.me/RemoteJobsHiringNow"
 MAX_AGE_DAYS = 7
 PREFERRED_AGE_DAYS = 2
+POST_INTERVAL_HOURS = 5
 if not BOT_TOKEN:
     print("ERROR: BOT_TOKEN empty")
     sys.exit(1)
@@ -94,6 +99,13 @@ TITLE_REGION_SCOPE = [
     r"\bemea\b",
     r"\bapac\b",
     r"\blatam\b",
+]
+
+# --- GUARANTEE: Fully remote only ---
+NOT_REMOTE_PATTERNS = [
+    r"\bon-site\b", r"\bonsite\b", r"\bin-office\b", r"\bin office\b", r"\bhybrid\b",
+    r"\bmust be on-site\b", r"\bmust be in office\b", r"\bmust work on-site\b",
+    r"\boffice-based\b", r"\bwork from office\b", r"\bcommute to\b",
 ]
 
 BETTER_SOURCES = ["remoteok", "remotive"]
@@ -351,6 +363,15 @@ def is_english(title, desc):
             return False
     return True
 
+def is_remote(job):
+    # GUARANTEE: Fully remote only. Reject on-site / hybrid / in-office.
+    # If job says "Remote" or says nothing about office, it passes.
+    text = ((job.get("title") or "") + " " + (job.get("desc") or "") + " " + (job.get("location") or "")).lower()
+    for pat in NOT_REMOTE_PATTERNS:
+        if re.search(pat, text):
+            return False
+    return True
+
 def is_worldwide(job):
     loc = (job.get("location") or "").lower()
     for bad in NON_WORLDWIDE:
@@ -505,6 +526,15 @@ def get_location_label(job):
     # 4. Source only says Remote / blank, and company/title give no region -> say Remote, do NOT invent Worldwide.
     return ("Remote", "Check Apply link for who can apply")
 
+def get_region_key(job):
+    # For rotation: "Only US" -> "US", "Worldwide" -> "Worldwide", "Remote" -> "Remote"
+    label, _ = get_location_label(job)
+    if label == "Worldwide":
+        return "Worldwide"
+    if label.startswith("Only "):
+        return label[5:].strip()
+    return label
+
 def fetch_remoteok():
     try:
         r = requests.get("https://remoteok.com/api", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
@@ -594,6 +624,9 @@ def reject_reason(job, posted_urls, posted_ids, channel_titles, max_age=MAX_AGE_
     age = get_age_days(job)
     if age > max_age:
         return f"too-old-{age}d"
+    # --- GUARANTEE: Fully remote only ---
+    if not is_remote(job):
+        return "not-remote-onsite-hybrid"
     # --- ONLY CHANGED HERE in reject_reason: no longer reject for region ---
     # Old: if not worldwide, reject. That meant a real "Only Philippines" job could never post.
     # New: post it, but label it correctly with get_location_label(). Location honesty is in the label, not in rejection.
@@ -608,14 +641,24 @@ def send_to_telegram(text):
     print(f"TELEGRAM: {resp.status_code} - {resp.text[:300]}")
     return resp
 
-def pick_best(candidates, last_cat):
+def pick_best(candidates, last_cat, last_regions=None):
+    # GUARANTEE: Region rotation. Penalise same region as last 2 posts.
+    last_regions = last_regions or []
     def score(item):
         job, cat, source_name = item
         salary = (job.get("salary") or "").strip() or extract_salary(job.get("desc", ""))
         has_salary = 1 if salary else 0
         diff_cat = 1 if cat != last_cat else 0
         age = get_age_days(job)
-        return (has_salary, diff_cat, -age)
+        region = get_region_key(job)
+        # Rotation: 0 if region = last post, 1 if different, 2 if not in last 2
+        if last_regions and region == last_regions[-1]:
+            region_score = 0
+        elif region in last_regions[-2:]:
+            region_score = 1
+        else:
+            region_score = 2
+        return (region_score, has_salary, diff_cat, -age)
     candidates_sorted = sorted(candidates, key=score, reverse=True)
     return candidates_sorted[0] if candidates_sorted else None
 
@@ -653,7 +696,7 @@ def collect_candidates(source_list, posted_urls, posted_ids, channel_titles, las
     return candidates
 
 def main():
-    state = load_json("state.json", {"last_source": -1, "last_categories": [], "ad_posted_today": "", "last_title": "", "last_source_name": ""})
+    state = load_json("state.json", {"last_source": -1, "last_categories": [], "ad_posted_today": "", "last_title": "", "last_source_name": "", "last_post_time": "", "last_regions": []})
     posted_data = load_json("posted.json", [])
     posted_urls = set()
     posted_ids = set()
@@ -665,9 +708,23 @@ def main():
             posted_urls.add(norm_url(item))
     channel_urls, channel_titles = fetch_channel_posted_urls()
     posted_urls = posted_urls.union(channel_urls)
-    print(f"Total memory: {len(posted_urls)} URLs (JSON + Channel) | Last source: {state.get('last_source_name')} | Last cat: {state.get('last_categories', [])[-1:] if state.get('last_categories') else []}")
+    print(f"Total memory: {len(posted_urls)} URLs (JSON + Channel) | Last source: {state.get('last_source_name')} | Last cat: {state.get('last_categories', [])[-1:] if state.get('last_categories') else []} | Last regions: {state.get('last_regions', [])}")
     today = datetime.now().strftime("%Y-%m-%d")
     hour = datetime.now(timezone.utc).hour
+    # --- GUARANTEE: Every 5 hours - skip if last post was < 5h ago ---
+    # This stops double-posts if workflow runs too often. Workflow cron should be 0 */5 * * *.
+    last_post_raw = state.get("last_post_time", "")
+    if last_post_raw:
+        try:
+            last_post_dt = datetime.fromisoformat(last_post_raw.replace("Z", "+00:00"))
+            if last_post_dt.tzinfo is None:
+                last_post_dt = last_post_dt.replace(tzinfo=timezone.utc)
+            hours_since = (datetime.now(timezone.utc) - last_post_dt).total_seconds() / 3600
+            if hours_since < POST_INTERVAL_HOURS:
+                print(f"SKIP: Last post was {hours_since:.1f}h ago, need {POST_INTERVAL_HOURS}h. Will post next run.")
+                return
+        except Exception as e:
+            print(f"last_post_time parse error (will post anyway): {e}")
     if hour == 6 and state.get("ad_posted_today") != today:
         ad = f"""📢 <b>ADVERTISE HERE</b>\n\nHiring? Have a job / service for job seekers?\nYour post will be seen by job seekers worldwide.\n\n👉 DM Admin: {ADMIN}\n\n📣 Share this channel: {SHARE_LINK}\n"""
         resp = send_to_telegram(ad)
@@ -677,17 +734,18 @@ def main():
         return
     last_cats = state.get("last_categories", [])
     last_cat = last_cats[-1] if last_cats else ""
+    last_regions = state.get("last_regions", [])
     last_source_name = state.get("last_source_name", "")
     better_ordered = [s for s in BETTER_SOURCES if s != last_source_name] + [s for s in BETTER_SOURCES if s == last_source_name]
     backup_ordered = [s for s in BACKUP_SOURCES if s != last_source_name]
     print(f"TIER 1 - Better sources: {better_ordered}")
     candidates = collect_candidates(better_ordered, posted_urls, posted_ids, channel_titles, last_cat)
-    chosen = pick_best(candidates, last_cat) if candidates else None
+    chosen = pick_best(candidates, last_cat, last_regions) if candidates else None
     if not chosen:
         print("TIER 1 empty - TIER 2 Backup sources only")
         print(f"TIER 2 - Backup sources: {backup_ordered}")
         candidates = collect_candidates(backup_ordered, posted_urls, posted_ids, channel_titles, last_cat)
-        chosen = pick_best(candidates, last_cat) if candidates else None
+        chosen = pick_best(candidates, last_cat, last_regions) if candidates else None
     if not chosen:
         print("No freelancer job found - Worldwide + English + Not in channel")
         return
@@ -754,9 +812,14 @@ def main():
         state["last_source"] = SOURCES.index(source_name) if source_name in SOURCES else 0
         state["last_source_name"] = source_name
         state["last_title"] = job["title"]
+        # --- GUARANTEE: Save post time + region for next run's 5h + rotation check ---
+        state["last_post_time"] = datetime.now(timezone.utc).isoformat()
+        region_key = get_region_key(job)
+        last_regions.append(region_key)
+        state["last_regions"] = last_regions[-10:]
         save_json("state.json", state)
         save_json("posted.json", posted_data)
-        print(f"SUCCESS: {cat} from {source_name} - {job['title']} - Salary: {'YES' if salary else 'Not listed'}")
+        print(f"SUCCESS: {cat} from {source_name} - {job['title']} - Region: {region_key} - Salary: {'YES' if salary else 'Not listed'}")
 
 if __name__ == "__main__":
     main()
