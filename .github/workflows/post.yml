@@ -1,6 +1,9 @@
 name: Job Poster Every 5 Hours
 permissions:
   contents: write
+concurrency:
+  group: job-poster
+  cancel-in-progress: true
 on:
   schedule:
     - cron: '0 */5 * * *'
