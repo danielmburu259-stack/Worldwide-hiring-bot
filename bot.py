@@ -4,6 +4,7 @@
 #    If source says Worldwide, say Worldwide. If source says a place, say Only that place.
 #    (e.g. USA, Philippines, Germany, Kenya, Brazil - any place, not just those examples)
 #    NEVER invent Worldwide when source only says Remote.
+#    If location is just "Remote", check company + title too - e.g. "Health Services Of North Texas" = Only US.
 # 2. Better sources first (RemoteOK, Remotive), Backup only if empty
 # 3. Freelancer = skill-based, NOT engineering/professional degree jobs
 #    ALLOWED: Representative, Manager, Senior, Executive, Lead - if remote + worldwide
@@ -371,12 +372,12 @@ def is_worldwide(job):
         return True
     return False
 
-# --- ONLY CHANGED FUNCTION HERE: get_location_label - fix "Only Us Only" ---
+# --- ONLY CHANGED FUNCTION HERE: get_location_label - also check company + title when location is Remote ---
 # Say what the source platform says. Never invent Worldwide.
-# FIX 1: Source may already say "US Only" / "Philippines Only". Strip that trailing "Only" first,
-#        then add ONE "Only". Otherwise we get "Only Us Only".
-# FIX 2: Fix US / UK / USA inside ANY phrase, not just whole string.
-#        "Southeast US" -> "Southeast US", not "Southeast Us". "USA, Canada" -> "USA, Canada".
+# FIX: For RSS jobs location is always "Remote" (hardcoded in fetch_rss). So "Remote" tells us nothing.
+#      Example that was missed: Company="Health Services Of North Texas" -> Texas -> Only US.
+#      We now check company + title too, ONLY when location is just Remote / blank.
+#      We do NOT use company to override a real location. If source says Philippines, we say Philippines.
 def _format_place_list(raw):
     # 1. Strip trailing " Only" if source already included it: "US Only" -> "US"
     s = raw.strip()
@@ -434,6 +435,42 @@ def _format_place_list(raw):
     joined = re.sub(r"\s*,\s*", ", ", joined)
     return joined
 
+def _region_from_company_title(job):
+    # ONLY used when location is just "Remote" / blank. Returns "US" / "UK" / etc. or "".
+    # Company / title containing a US state / UK city / country = strong signal the job is for that country.
+    # We map state/city -> country, because the label we show is country-level: "Only US", "Only UK".
+    text = ((job.get("company") or "") + " " + (job.get("title") or "")).lower()
+    # US states - longest first so "new york" wins over "york" etc.
+    us_states = [
+        "north texas", "south texas", "new york", "california", "texas", "florida", "illinois", "pennsylvania",
+        "ohio", "georgia", "north carolina", "michigan", "new jersey", "virginia", "washington",
+        "arizona", "massachusetts", "tennessee", "indiana", "missouri", "maryland", "wisconsin",
+        "colorado", "minnesota", "south carolina", "alabama", "louisiana", "kentucky", "oregon",
+        "oklahoma", "connecticut", "utah", "iowa", "nevada", "arkansas", "mississippi", "kansas",
+        "new mexico", "nebraska", "idaho", "west virginia", "hawaii", "new hampshire", "maine",
+        "montana", "rhode island", "delaware", "south dakota", "north dakota", "alaska", "vermont", "wyoming",
+    ]
+    for s in us_states:
+        if re.search(r"\b" + re.escape(s) + r"\b", text):
+            return "US"
+    # UK cities
+    uk_cities = ["london", "manchester", "birmingham", "leeds", "glasgow", "liverpool", "edinburgh", "bristol"]
+    for c in uk_cities:
+        if re.search(r"\b" + re.escape(c) + r"\b", text):
+            return "UK"
+    # Other countries by name in company / title
+    country_map = [
+        ("philippines", "Philippines"), ("canada", "Canada"), ("australia", "Australia"),
+        ("india", "India"), ("kenya", "Kenya"), ("nigeria", "Nigeria"), ("south africa", "South Africa"),
+        ("germany", "Germany"), ("france", "France"), ("spain", "Spain"), ("netherlands", "Netherlands"),
+        ("brazil", "Brazil"), ("mexico", "Mexico"), ("japan", "Japan"), ("pakistan", "Pakistan"),
+        ("bangladesh", "Bangladesh"), ("indonesia", "Indonesia"),
+    ]
+    for key, label in country_map:
+        if re.search(r"\b" + re.escape(key) + r"\b", text):
+            return label
+    return ""
+
 def get_location_label(job):
     loc = (job.get("location") or "").strip()
     loc_low = loc.lower()
@@ -448,6 +485,12 @@ def get_location_label(job):
         place = _format_place_list(loc)
         if place:
             return (f"Only {place}", f"Only {place} Can Apply")
+    # 2b. NEW: Location is just "Remote", but company / title names a region -> use it.
+    # Example: Company "Health Services Of North Texas" -> Only US.
+    # This does NOT override a real location above, it only fills in when location is useless.
+    region = _region_from_company_title(job)
+    if region:
+        return (f"Only {region}", f"Only {region} Can Apply")
     # 3. Location is just "Remote" but description clearly says "<Place> only" -> use that place.
     # Generic: any 1-2 word place, not a hard-coded country list.
     stopwords = {"candidates", "applicants", "remote", "online", "fully", "all", "those", "this", "that", "eligible", "qualified", "based", "located", "residing"}
@@ -459,7 +502,7 @@ def get_location_label(job):
             place = _format_place_list(place_raw)
             if place:
                 return (f"Only {place}", f"Only {place} Can Apply")
-    # 4. Source only says Remote / blank -> say Remote, do NOT invent Worldwide.
+    # 4. Source only says Remote / blank, and company/title give no region -> say Remote, do NOT invent Worldwide.
     return ("Remote", "Check Apply link for who can apply")
 
 def fetch_remoteok():
