@@ -1,23 +1,47 @@
-# RemoteJobsHiringNow - V10 - Share line + Block ALL Engineers + Title-only category
+# RemoteJobsHiringNow - V11 FINAL - High Quality
+# Features:
+# - Fresh: 2 days preferred, 7 days backup, never older than 7 days
+# - No repeat: URL + Title+Company double memory
+# - Different category every run, different source every run
+# - Freelancer jobs only, NO engineers / senior / graduate
+# - Professional short post + Share line
 import os, json, requests, html, random, re, sys, hashlib
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
+# ============ CONFIG ============
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip() or os.getenv("TELEGRAM_CHAT_ID", "").strip() or os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
 if not CHANNEL_ID:
     CHANNEL_ID = "@RemoteJobsHiringNow"
 ADMIN = "@dantez4u"
-MAX_AGE_DAYS = 30
 SHARE_LINK = "https://t.me/RemoteJobsHiringNow"
+MAX_AGE_DAYS = 7
+PREFERRED_AGE_DAYS = 2
 
 if not BOT_TOKEN:
     print("ERROR: BOT_TOKEN empty")
     sys.exit(1)
 
-FREELANCER_CATS = ["Writing","Customer Support","Data Entry","Social Media","Design","Virtual Assistant","Marketing","Translation","Transcription","Sales","Admin","Video Editing"]
+# Rotation order - bot goes in this order, never same category twice in a row
+FREELANCER_CATS = [
+    "Writing",
+    "Customer Support",
+    "Data Entry",
+    "Social Media",
+    "Design",
+    "Virtual Assistant",
+    "Marketing",
+    "Translation",
+    "Transcription",
+    "Sales",
+    "Admin",
+    "Video Editing",
+]
 
+# Category = TITLE ONLY. Description is NOT used for category.
+# This stops "Mechanical Engineer" becoming "Writing" because description says "writing reports"
 CAT_KEYWORDS = {
     "Writing": ["writer", "writing", "copywriter", "content writer", "blog", "article", "editor", "proofread", "ghostwriter", "copy editor"],
     "Customer Support": ["customer support", "support agent", "support specialist", "help desk", "customer service", "chat support", "customer success"],
@@ -26,35 +50,45 @@ CAT_KEYWORDS = {
     "Design": ["graphic design", "designer", "canva", "logo", "illustrator", "photoshop", "ui design", "thumbnail"],
     "Virtual Assistant": ["virtual assistant", "personal assistant", "executive assistant", "admin assistant", "office assistant"],
     "Marketing": ["marketing", "seo", "email marketing", "digital marketing", "affiliate", "lead generation"],
-    "Translation": ["translator", "translation", "interpreter", "bilingual", "translat"],
+    "Translation": ["translator", "translation", "interpreter", "bilingual"],
     "Transcription": ["transcription", "transcriber", "caption", "subtitle"],
     "Sales": ["sales", "sales rep", "appointment setter", "cold caller", "business development", "lead gen"],
     "Admin": ["administrative", "admin", "bookkeeping", "bookkeeper", "accounting assistant", "receptionist", "scheduling"],
     "Video Editing": ["video edit", "video editor", "video editing", "youtube editor", "reels editor"],
 }
 
-# FIXED: Block ANY engineer, ANY senior, ANY graduate engineer, ANY 2027 start
-BLOCKED = [
+# Block ALL high-professional jobs - if title contains any of these, skip it
+BLOCKED_IN_TITLE = [
     "engineer", "engineering", "developer", "devops", "software", "backend", "frontend",
-    "data scientist", "machine learning", "ai engineer", "architect", "cto", "principal",
-    "staff engineer", "java", "python", "react", "node", "kubernetes",
-    "cybersecurity", "security engineer", "blockchain", "quant", "phd", "research scientist",
+    "data scientist", "machine learning", "architect", "cto", "principal",
+    "staff", "java", "python", "react", "node", "kubernetes",
+    "cybersecurity", "security", "blockchain", "quant", "phd", "research scientist",
     "product manager", "engineering manager", "director", "vp ", "head of",
-    "medical", "doctor", "nurse", "lawyer", "attorney", "accountant cpa",
+    "medical", "doctor", "nurse", "lawyer", "attorney", "accountant",
     "mechanical", "electrical", "civil", "chemical", "aerospace",
     "graduate", "internship", "intern", "2027", "2028", "apprentice",
-    "senior", "lead engineer", "principal",
+    "senior", "lead", "manager", "supervisor",
+]
+
+# Words that if in DESCRIPTION, also block (strong scam / senior signals)
+BLOCKED_IN_DESC = [
+    "pay to apply", "pay fee", "training fee", "activation fee", "membership fee",
+    "position filled", "job is closed", "applications closed", "no longer accepting",
 ]
 
 SOURCES = ["remoteok", "remotive", "arbeitnow", "wwr_all", "wwr_design", "jobicy", "remote_co", "himalayas"]
 
+# ============ HELPERS ============
 def load_json(name, default):
     try:
-        with open(name) as f: return json.load(f)
-    except: return default
+        with open(name) as f:
+            return json.load(f)
+    except:
+        return default
 
 def save_json(name, data):
-    with open(name, "w") as f: json.dump(data, f, indent=2)
+    with open(name, "w") as f:
+        json.dump(data, f, indent=2)
 
 def norm_url(u):
     u = (u or "").strip().lower()
@@ -66,7 +100,8 @@ def make_id(job):
     return hashlib.md5(key.encode()).hexdigest()[:12]
 
 def parse_date(raw):
-    if not raw: return None
+    if not raw:
+        return None
     try:
         if "T" in str(raw):
             dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
@@ -77,13 +112,23 @@ def parse_date(raw):
     except:
         return None
 
+def get_age_days(job):
+    if not job.get("posted_date"):
+        return 0
+    return (datetime.now(timezone.utc) - job["posted_date"]).days
+
+def is_fresh(job):
+    return get_age_days(job) <= PREFERRED_AGE_DAYS
+
+# ============ FETCHERS - 8 SOURCES ============
 def fetch_remoteok():
     try:
         r = requests.get("https://remoteok.com/api", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
         out = []
         for j in r.json():
-            if not isinstance(j, dict) or not j.get("position"): continue
-            out.append({"title": j.get("position"), "company": j.get("company"), "url": j.get("url"), "location": j.get("location","Remote"), "desc": " ".join(j.get("tags",[])) + " " + str(j.get("description",""))[:800], "salary": f"${j.get('salary_min','')} - ${j.get('salary_max','')}" if j.get("salary_min") else "", "source": "RemoteOK", "posted_date": parse_date(j.get("date"))})
+            if not isinstance(j, dict) or not j.get("position"):
+                continue
+            out.append({"title": j.get("position"), "company": j.get("company"), "url": j.get("url"), "location": j.get("location", "Remote"), "desc": " ".join(j.get("tags", [])) + " " + str(j.get("description", ""))[:800], "salary": f"${j.get('salary_min','')} - ${j.get('salary_max','')}" if j.get("salary_min") else "", "source": "RemoteOK", "posted_date": parse_date(j.get("date"))})
         print(f"RemoteOK {len(out)}")
         return out
     except Exception as e:
@@ -95,7 +140,7 @@ def fetch_remotive():
         r = requests.get("https://remotive.com/api/remote-jobs?limit=100", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
         out = []
         for j in r.json().get("jobs", []):
-            out.append({"title": j.get("title"), "company": j.get("company_name"), "url": j.get("url"), "location": j.get("candidate_required_location","Remote"), "desc": j.get("description","")[:800], "salary": j.get("salary") or "", "source": "Remotive", "posted_date": parse_date(j.get("publication_date"))})
+            out.append({"title": j.get("title"), "company": j.get("company_name"), "url": j.get("url"), "location": j.get("candidate_required_location", "Remote"), "desc": j.get("description", "")[:800], "salary": j.get("salary") or "", "source": "Remotive", "posted_date": parse_date(j.get("publication_date"))})
         print(f"Remotive {len(out)}")
         return out
     except Exception as e:
@@ -107,7 +152,7 @@ def fetch_arbeitnow():
         r = requests.get("https://www.arbeitnow.com/api/job-board-api", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
         out = []
         for j in r.json().get("data", []):
-            out.append({"title": j.get("title"), "company": j.get("company_name"), "url": j.get("url"), "location": j.get("location") or "Remote", "desc": j.get("description","")[:800], "salary": "", "source": "Arbeitnow", "posted_date": parse_date(j.get("created_at"))})
+            out.append({"title": j.get("title"), "company": j.get("company_name"), "url": j.get("url"), "location": j.get("location") or "Remote", "desc": j.get("description", "")[:800], "salary": "", "source": "Arbeitnow", "posted_date": parse_date(j.get("created_at"))})
         print(f"Arbeitnow {len(out)}")
         return out
     except Exception as e:
@@ -142,53 +187,42 @@ FETCHERS = {
     "himalayas": lambda: fetch_rss("https://himalayas.app/jobs/rss", "Himalayas"),
 }
 
+# ============ FILTERS ============
 def get_freelancer_category(title, desc):
-    # FIXED: 1) Block check on TITLE + DESC - any engineer word = block
-    # 2) Category check on TITLE ONLY - not description. Stops "Mechanical Engineer" becoming "Writing" because description says "writing reports"
-    t = title.lower()
-    d = desc.lower()
-    for b in BLOCKED:
-        if b in t or b in d:
-            # Special: "engineering" in desc but title is freelancer? Still block to be safe
-            # But allow "sales engineer" ? No - block all engineer titles
-            if b in t:
-                return None
-            # If blocked word only in desc and title is clearly freelancer, allow it
-            # Example: "Customer Support" desc says "engineering team" - that's OK
-            # So only block desc if it's strong: engineer, developer, software
-            if b in ["engineer", "engineering", "developer", "software", "devops", "mechanical", "electrical", "civil"]:
-                if b in d:
-                    # Check if title is NOT freelancer - if title matches freelancer, still allow? No, for engineer jobs desc will have engineer, title will also have it, already blocked above
-                    pass
-    # If title contains any blocked word, reject
-    for b in BLOCKED:
+    t = (title or "").lower()
+    # 1. If title contains blocked word -> reject immediately. No Engineer, no Senior, no Manager, no Graduate
+    for b in BLOCKED_IN_TITLE:
         if b in t:
             return None
-    # Category from TITLE ONLY
+    # 2. Category from TITLE ONLY
     for cat, kws in CAT_KEYWORDS.items():
         for kw in kws:
             if kw in t:
                 return cat
     return None
 
-def reject_reason(job, posted_urls, posted_ids):
-    if norm_url(job["url"]) in posted_urls: return "repeat"
-    if make_id(job) in posted_ids: return "repeat-id"
-    if not job["url"] or len(job["url"]) < 10: return "no-url"
+def reject_reason(job, posted_urls, posted_ids, max_age=MAX_AGE_DAYS):
+    if norm_url(job["url"]) in posted_urls:
+        return "repeat-url"
+    if make_id(job) in posted_ids:
+        return "repeat-id"
+    if not job["url"] or len(job["url"]) < 10:
+        return "no-url"
     text = (job["title"] + " " + job["desc"]).lower()
-    if any(x in text for x in ["position filled", "job is closed", "applications closed", "no longer accepting applications"]): return "closed"
-    if any(x in text for x in ["pay to apply", "pay fee", "training fee", "activation fee"]): return "scam-fee"
-    if job.get("posted_date"):
-        age = (datetime.now(timezone.utc) - job["posted_date"]).days
-        if age > MAX_AGE_DAYS: return f"too-old-{age}d"
+    for bad in BLOCKED_IN_DESC:
+        if bad in text:
+            return f"blocked-{bad}"
+    age = get_age_days(job)
+    if age > max_age:
+        return f"too-old-{age}d"
     return None
 
 def get_location_line(job):
     loc = (job["location"] or "Remote").strip()
     low = loc.lower()
-    if any(x in low for x in ["(uk)", "united kingdom", " uk ", "london", "england"]):
+    if any(x in low for x in ["(uk)", "united kingdom", " london", "england", " uk"]):
         return f"📍 Remote (UK) - Check link if your country can apply", "🇬🇧 UK Based - Check Link"
-    if any(x in low for x in ["(us)", "united states", "usa", "america", "new york", "california", "texas"]):
+    if any(x in low for x in ["(us)", "united states", "usa", "america", "new york", "california", "texas", " us"]):
         return f"📍 Remote (US) - Check link if your country can apply", "🇺🇸 US Based - Check Link"
     if any(x in low for x in ["(eu)", "europe", "germany", "france", "netherlands", "spain", "berlin"]):
         return f"📍 Remote (EU) - Check link if your country can apply", "🇪🇺 EU Based - Check Link"
@@ -202,22 +236,26 @@ def send_to_telegram(text):
     print(f"TELEGRAM: {resp.status_code} - {resp.text[:300]}")
     return resp
 
+# ============ MAIN ============
 def main():
     state = load_json("state.json", {"last_source": -1, "last_categories": [], "ad_posted_today": "", "last_title": "", "last_source_name": ""})
     posted_data = load_json("posted.json", [])
+
+    # Support old format [url, url] and new format [{url, id, ...}]
     posted_urls = set()
     posted_ids = set()
     for item in posted_data:
         if isinstance(item, dict):
-            posted_urls.add(norm_url(item.get("url","")))
-            posted_ids.add(item.get("id",""))
+            posted_urls.add(norm_url(item.get("url", "")))
+            posted_ids.add(item.get("id", ""))
         else:
             posted_urls.add(norm_url(item))
-    print(f"Memory: {len(posted_urls)} URLs, Last source: {state.get('last_source_name')}, Last cats: {state.get('last_categories',[])[-3:]}")
+    print(f"Memory: {len(posted_urls)} URLs, {len(posted_ids)} IDs | Last source: {state.get('last_source_name')} | Last cats: {state.get('last_categories', [])[-3:]}")
 
     today = datetime.now().strftime("%Y-%m-%d")
     hour = datetime.now(timezone.utc).hour
 
+    # AD - 1x per day at 06 UTC
     if hour == 6 and state.get("ad_posted_today") != today:
         ad = f"""📢 <b>ADVERTISE HERE</b>
 
@@ -236,6 +274,8 @@ Your post will be seen by job seekers worldwide.
 
     last_cats = state.get("last_categories", [])
     last_source_name = state.get("last_source_name", "")
+
+    # --- PICK TARGET CATEGORY: First category NOT in last 10 ---
     target_cat = None
     for cat in FREELANCER_CATS:
         if cat not in last_cats[-10:]:
@@ -245,6 +285,7 @@ Your post will be seen by job seekers worldwide.
         target_cat = FREELANCER_CATS[0]
     print(f"Target category: {target_cat}")
 
+    # --- PICK SOURCE ORDER: Must be different from last run ---
     start_idx = (state.get("last_source", -1) + 1) % len(SOURCES)
     ordered = SOURCES[start_idx:] + SOURCES[:start_idx]
     if ordered[0] == last_source_name and len(ordered) > 1:
@@ -253,11 +294,16 @@ Your post will be seen by job seekers worldwide.
 
     candidates_target = []
     candidates_any = []
+
+    # PASS 1: FRESH ONLY - Last 2 days
+    print("PASS 1: Fresh jobs (last 2 days)")
     for source_name in ordered:
         jobs = FETCHERS[source_name]()
         random.shuffle(jobs)
         for job in jobs:
-            if reject_reason(job, posted_urls, posted_ids):
+            if reject_reason(job, posted_urls, posted_ids, max_age=MAX_AGE_DAYS):
+                continue
+            if not is_fresh(job):
                 continue
             cat = get_freelancer_category(job["title"], job["desc"])
             if not cat:
@@ -268,34 +314,61 @@ Your post will be seen by job seekers worldwide.
                 if cat not in last_cats[-3:]:
                     candidates_any.append((job, cat, source_name))
         if len(candidates_target) >= 3:
+            print(f"Found {len(candidates_target)} fresh for {target_cat} from {source_name}")
             break
+
+    # PASS 2: BACKUP - Up to 7 days, so you never miss a 5h slot
+    if not candidates_target and not candidates_any:
+        print("PASS 2: Backup jobs (up to 7 days)")
+        for source_name in ordered:
+            jobs = FETCHERS[source_name]()
+            random.shuffle(jobs)
+            for job in jobs:
+                if reject_reason(job, posted_urls, posted_ids, max_age=MAX_AGE_DAYS):
+                    continue
+                cat = get_freelancer_category(job["title"], job["desc"])
+                if not cat:
+                    continue
+                if cat == target_cat:
+                    candidates_target.append((job, cat, source_name))
+                else:
+                    if cat not in last_cats[-3:]:
+                        candidates_any.append((job, cat, source_name))
+            if len(candidates_target) >= 3:
+                break
 
     chosen = None
     if candidates_target:
         random.shuffle(candidates_target)
         chosen = candidates_target[0]
+        print(f"Chose TARGET: {chosen[1]} from {chosen[2]}")
     elif candidates_any:
         random.shuffle(candidates_any)
         chosen = candidates_any[0]
+        print(f"Chose OTHER: {chosen[1]} from {chosen[2]}")
     else:
-        print("No freelancer job found")
+        print("No freelancer job found from ANY source")
         return
 
     job, cat, source_name = chosen
+
+    # Final repeat guard
     if job["title"].strip().lower() == state.get("last_title", "").strip().lower():
-        print("SKIP: Same title as last")
+        print("SKIP: Same title as last post")
         return
 
     date_str = ""
     if job.get("posted_date"):
         date_str = f"\n📅 Posted: {job['posted_date'].strftime('%d %b %Y')}"
+
     loc_line, who_line = get_location_line(job)
+
+    # Salary: ONLY if we know it. If empty, hide line completely.
     salary = (job.get("salary") or "").strip()
     salary_line = ""
     if salary and salary.lower() not in ["see link", "see link."]:
         salary_line = f"\n💰 {html.escape(salary)}"
 
-    # PROFESSIONAL POST + SHARE LINE AT BOTTOM
     message = f"""🌍 <b>REMOTE JOB - {cat}</b>{date_str}
 
 📌 <b>{html.escape(job['title'])}</b>
@@ -312,7 +385,7 @@ Your post will be seen by job seekers worldwide.
 """
     resp = send_to_telegram(message)
     if resp.status_code == 200:
-        posted_data.append({"url": job["url"], "id": make_id(job), "title": job["title"], "date": today})
+        posted_data.append({"url": job["url"], "id": make_id(job), "title": job["title"], "date": today, "category": cat, "source": source_name})
         last_cats.append(cat)
         state["last_categories"] = last_cats[-15:]
         state["last_source"] = SOURCES.index(source_name) if source_name in SOURCES else start_idx
@@ -320,7 +393,7 @@ Your post will be seen by job seekers worldwide.
         state["last_title"] = job["title"]
         save_json("state.json", state)
         save_json("posted.json", posted_data)
-        print(f"SUCCESS: {cat} from {source_name} - {job['title']}")
+        print(f"SUCCESS: {cat} from {source_name} - {job['title']} - Age: {get_age_days(job)}d")
 
 if __name__ == "__main__":
     main()
