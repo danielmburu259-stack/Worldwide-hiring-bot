@@ -161,30 +161,17 @@ def extract_job_type(desc, title):
         return "Temporary"
     return ""
 
-def extract_snippet(desc):
-    if not desc:
-        return ""
-    clean = html.unescape(desc)
-    clean = re.sub(r"<[^>]+>", " ", clean)
-    clean = re.sub(r"\s+", " ", clean).strip()
-    if len(clean) < 20:
-        return ""
-    # Skip boilerplate + company pitch - not what YOU will do
-    skip_words = ["headquarters", "only initiates contact", "official email", "equal opportunity", "about us", "about tebra", "about the company", "we are an", "we're hiring", "location:", "remote:", "job type", "headquarters:", "united states -", "check link", "we help companies", "we provide", "we offer", "our mission", "our platform", "we are changing", "we are building", "we are on a mission"]
-    sentences = clean.split(". ")
-    # PASS 1 - FIXED: Look for YOUR ROLE first - "you will / your role / responsibilities"
-    role_words = ["you will", "you'll", "your role", "in this role", "responsibilities", "as a", "you will be", "your job", "what you'll do", "you are responsible"]
-    for s in sentences:
-        low = s.lower()
-        if any(w in low for w in skip_words):
-            continue
-        if len(s.strip()) < 45:
-            continue
-        if any(w in low for w in role_words):
-            sentence = s.strip()
-            break
-    else:
-        # PASS 2 - Fallback: any real job-duty sentence, still skip company pitch
+def extract_snippet(desc, title="", company=""):
+    # PASS 1 + 2: Use ONLY real sentences from source, never invent duties
+    clean = ""
+    if desc:
+        clean = html.unescape(desc)
+        clean = re.sub(r"<[^>]+>", " ", clean)
+        clean = re.sub(r"\s+", " ", clean).strip()
+    if len(clean) >= 20:
+        skip_words = ["headquarters", "only initiates contact", "official email", "equal opportunity", "about us", "about tebra", "about the company", "we are an", "we're hiring", "location:", "remote:", "job type", "headquarters:", "united states -", "check link", "we help companies", "we provide", "we offer", "our mission", "our platform", "we are changing", "we are building", "we are on a mission"]
+        sentences = clean.split(". ")
+        role_words = ["you will", "you'll", "your role", "in this role", "responsibilities", "as a", "you will be", "your job", "what you'll do", "you are responsible"]
         sentence = ""
         for s in sentences:
             low = s.lower()
@@ -192,17 +179,35 @@ def extract_snippet(desc):
                 continue
             if len(s.strip()) < 45:
                 continue
-            if not any(w in low for w in ["design", "work", "create", "build", "help", "join", "looking for", "we need", "role", "experience", "skill", "write", "support", "manage"]):
-                continue
-            sentence = s.strip()
-            break
+            if any(w in low for w in role_words):
+                sentence = s.strip()
+                break
         if not sentence:
-            return ""
-    if len(sentence) > 160:
-        sentence = sentence[:157] + "..."
-    if not sentence.endswith(".") and not sentence.endswith("..."):
-        sentence += "."
-    return sentence
+            for s in sentences:
+                low = s.lower()
+                if any(w in low for w in skip_words):
+                    continue
+                if len(s.strip()) < 45:
+                    continue
+                if not any(w in low for w in ["design", "work", "create", "build", "help", "join", "looking for", "we need", "role", "experience", "skill", "write", "support", "manage"]):
+                    continue
+                sentence = s.strip()
+                break
+        if sentence:
+            if len(sentence) > 160:
+                sentence = sentence[:157] + "..."
+            if not sentence.endswith(".") and not sentence.endswith("..."):
+                sentence += "."
+            return sentence
+    # PASS 3 - FIXED SAFE FALLBACK: No real sentence found, do NOT invent duties.
+    # Only repeat what we KNOW is true: Title + Company. Point to link for real details.
+    t = (title or "").strip()
+    c = (company or "").strip()
+    if t and c:
+        return f"Open role: {t} at {c}. Check the Apply link for full duties, requirements and pay."
+    if t:
+        return f"Open role: {t}. Check the Apply link for full duties, requirements and pay."
+    return ""
 
 def is_english(title, desc):
     text = (title or "") + " " + (desc or "")[:500]
@@ -416,7 +421,7 @@ def main():
     salary_line = f"\n💰 Salary: {html.escape(salary)}" if salary else "\n💰 Salary: Not listed"
     job_type = extract_job_type(job.get("desc", ""), job.get("title", ""))
     type_line = f"\n🕒 Type: {job_type}" if job_type else ""
-    snippet = extract_snippet(job.get("desc", ""))
+    snippet = extract_snippet(job.get("desc", ""), job.get("title", ""), job.get("company", ""))
     snippet_line = f"\n📋 {html.escape(snippet)}" if snippet else ""
     message = f"""🌍 <b>REMOTE JOB - {cat}</b>{date_str}\n\n📌 <b>{html.escape(job['title'])}</b>\n🏢 {html.escape(job['company'] or 'Company')}\n📍 Worldwide{salary_line}{type_line}{snippet_line}\n\n🌍 Worldwide - All Can Apply ✅\n\n👉 <b>Apply Here:</b> {job['url']}\n\n⚠️ Never pay to apply for a job.\n\n📣 Share with a friend who needs a job 👉 {SHARE_LINK}\n"""
     resp = send_to_telegram(message)
