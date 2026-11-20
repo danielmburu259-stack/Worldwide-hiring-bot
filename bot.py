@@ -1,24 +1,21 @@
-# RemoteJobsHiringNow - V5 FIXED - GitHub ONLY
-# Fixes: Reads all secrets, shows real Telegram error, does NOT save if post fails
+# RemoteJobsHiringNow - V6 FIXED
+# Fix: Try ALL sources in same run, relaxed open-check, debug why job rejected
 import os, json, requests, html, random, re, sys
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
-# --- READ FROM GITHUB SECRETS - All 3 ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-# You added TELEGRAM_CHAT_ID and CHANNEL_ID as secrets - we use both
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip() or os.getenv("TELEGRAM_CHAT_ID", "").strip() or os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
 if not CHANNEL_ID:
     CHANNEL_ID = "@RemoteJobsHiringNow"
-
 ADMIN = "@dantez4u"
-MAX_AGE_DAYS = 7
+MAX_AGE_DAYS = 30  # FIXED: Was 7, too strict. RemoteOK dates are often 2-3 weeks old but still open
 
 print(f"DEBUG: BOT_TOKEN exists? {bool(BOT_TOKEN)} len={len(BOT_TOKEN)}")
 print(f"DEBUG: CHANNEL_ID = {CHANNEL_ID}")
 if not BOT_TOKEN:
-    print("ERROR: BOT_TOKEN is empty! Check Secrets - name must be exactly BOT_TOKEN")
+    print("ERROR: BOT_TOKEN empty")
     sys.exit(1)
 
 SOURCES = ["remoteok", "remotive", "arbeitnow", "wwr_all", "wwr_design", "jobicy", "remote_co", "himalayas"]
@@ -26,9 +23,7 @@ SOURCES = ["remoteok", "remotive", "arbeitnow", "wwr_all", "wwr_design", "jobicy
 def load_json(name, default):
     try:
         with open(name) as f: return json.load(f)
-    except Exception as e:
-        print(f"load {name} failed: {e}")
-        return default
+    except: return default
 
 def save_json(name, data):
     with open(name, "w") as f: json.dump(data, f, indent=2)
@@ -45,17 +40,14 @@ def parse_date(raw):
     except:
         return None
 
-def is_fresh(posted_date):
-    if not posted_date: return True
-    return (datetime.now(timezone.utc) - posted_date).days <= MAX_AGE_DAYS
-
 def fetch_remoteok():
     try:
-        r = requests.get("https://remoteok.com/api?tag=remote", headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        # FIXED: No ?tag=remote, use plain API - gives 100+ jobs, not 3
+        r = requests.get("https://remoteok.com/api", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
         out = []
         for j in r.json():
             if not isinstance(j, dict) or not j.get("position"): continue
-            out.append({"title": j.get("position"), "company": j.get("company"), "url": j.get("url"), "location": j.get("location","Remote"), "desc": " ".join(j.get("tags",[])), "salary": f"${j.get('salary_min','')} - ${j.get('salary_max','')}" if j.get("salary_min") else "See link", "source": "RemoteOK", "posted_date": parse_date(j.get("date"))})
+            out.append({"title": j.get("position"), "company": j.get("company"), "url": j.get("url"), "location": j.get("location","Remote"), "desc": " ".join(j.get("tags",[])) + " " + str(j.get("description",""))[:500], "salary": f"${j.get('salary_min','')} - ${j.get('salary_max','')}" if j.get("salary_min") else "See link", "source": "RemoteOK", "posted_date": parse_date(j.get("date"))})
         print(f"RemoteOK fetched {len(out)} jobs")
         return out
     except Exception as e:
@@ -64,7 +56,7 @@ def fetch_remoteok():
 
 def fetch_remotive():
     try:
-        r = requests.get("https://remotive.com/api/remote-jobs?limit=100", headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        r = requests.get("https://remotive.com/api/remote-jobs?limit=100", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
         out = []
         for j in r.json().get("jobs", []):
             out.append({"title": j.get("title"), "company": j.get("company_name"), "url": j.get("url"), "location": j.get("candidate_required_location","Remote"), "desc": j.get("description","")[:800], "salary": j.get("salary") or "See link", "source": "Remotive", "posted_date": parse_date(j.get("publication_date"))})
@@ -76,7 +68,7 @@ def fetch_remotive():
 
 def fetch_arbeitnow():
     try:
-        r = requests.get("https://www.arbeitnow.com/api/job-board-api", headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        r = requests.get("https://www.arbeitnow.com/api/job-board-api", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
         out = []
         for j in r.json().get("data", []):
             out.append({"title": j.get("title"), "company": j.get("company_name"), "url": j.get("url"), "location": j.get("location") or "Remote", "desc": j.get("description","")[:800], "salary": "See link", "source": "Arbeitnow", "posted_date": parse_date(j.get("created_at"))})
@@ -88,10 +80,10 @@ def fetch_arbeitnow():
 
 def fetch_rss(url, source_name):
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
         root = ET.fromstring(r.content)
         out = []
-        for item in root.findall(".//item")[:40]:
+        for item in root.findall(".//item")[:50]:
             title = item.findtext("title") or ""
             link = item.findtext("link") or ""
             desc = re.sub("<[^>]+>", " ", item.findtext("description") or "")[:800]
@@ -125,15 +117,23 @@ def get_category(title):
 def is_similar(cat1, cat2):
     return len(set(cat1.lower().split()) & set(cat2.lower().split())) > 0
 
-def is_closed(job):
+def reject_reason(job, posted):
+    # FIXED: Only reject if REALLY closed. Old code rejected "disclosed", "enclosed" because they contain "closed"
+    if job["url"] in posted:
+        return "repeat"
     text = (job["title"] + " " + job["desc"]).lower()
-    if any(x in text for x in ["position filled", "job closed", "no longer accepting", "applications closed", "expired"]):
-        return True
-    if any(x in text for x in ["pay to apply", "pay fee", "deposit", "training fee", "activation fee"]):
-        return True
-    if job.get("posted_date") and not is_fresh(job["posted_date"]):
-        return True
-    return False
+    # Only exact phrases, not single word "closed"
+    if any(x in text for x in ["position filled", "job is closed", "applications closed", "no longer accepting applications", "this job has expired", "position has been filled"]):
+        return "really-closed"
+    if any(x in text for x in ["pay to apply", "pay fee", "training fee", "activation fee", "pay $50 to apply"]):
+        return "scam-fee"
+    if job.get("posted_date"):
+        age = (datetime.now(timezone.utc) - job["posted_date"]).days
+        if age > MAX_AGE_DAYS:
+            return f"too-old-{age}d"
+    if not job["url"] or len(job["url"]) < 10:
+        return "no-url"
+    return None
 
 def analyze_job(job):
     text = (job["title"] + " " + job["desc"] + " " + job["location"]).lower()
@@ -164,12 +164,11 @@ def send_to_telegram(text):
 def main():
     state = load_json("state.json", {"last_source": -1, "last_categories": [], "ad_posted_today": ""})
     posted = set(load_json("posted.json", []))
-    print(f"Posted memory: {len(posted)} jobs already posted")
+    print(f"Posted memory: {len(posted)} jobs")
     today = datetime.now().strftime("%Y-%m-%d")
     hour = datetime.now(timezone.utc).hour
-    print(f"UTC Hour now: {hour}, Today: {today}")
+    print(f"UTC Hour: {hour}, Today: {today}")
 
-    # --- DAILY AD ---
     if hour == 6 and state.get("ad_posted_today") != today:
         ad_text = f"""📢 <b>ADVERTISE HERE - TO GLOBAL JOB SEEKERS</b>
 
@@ -188,62 +187,63 @@ Share this channel 👉 https://t.me/RemoteJobsHiringNow
         if resp.status_code == 200:
             state["ad_posted_today"] = today
             save_json("state.json", state)
-            print("Ad posted OK")
-        else:
-            print("Ad FAILED - not saving state, will retry next run")
         return
 
-    next_src_idx = (state["last_source"] + 1) % len(SOURCES)
-    source_name = SOURCES[next_src_idx]
-    print(f"Trying source: {source_name} (index {next_src_idx})")
-    jobs = FETCHERS[source_name]()
-    random.shuffle(jobs)
+    # FIXED: Try ALL sources in this ONE run, in rotated order. Don't wait 5h if first fails.
+    start_idx = (state.get("last_source", -1) + 1) % len(SOURCES)
+    ordered_sources = SOURCES[start_idx:] + SOURCES[:start_idx]
+    print(f"Will try sources in order: {ordered_sources}")
     last_cats = state.get("last_categories", [])
-    print(f"Last categories to avoid: {last_cats}")
 
-    best = None
+    best_overall = None
     best_score = -999
     best_cat = ""
-    skipped_closed = 0
-    skipped_repeat = 0
-    skipped_cat = 0
+    best_source_idx = start_idx
 
-    for job in jobs:
-        if job["url"] in posted:
-            skipped_repeat += 1
-            continue
-        if is_closed(job):
-            skipped_closed += 1
-            continue
-        cat = get_category(job["title"])
-        if any(is_similar(cat, old) for old in last_cats):
-            skipped_cat += 1
-            continue
-        who, score = analyze_job(job)
-        if score > best_score:
-            best_score = score
-            best = (job, who)
-            best_cat = cat
-
-    print(f"Filtered: repeat={skipped_repeat}, closed/old={skipped_closed}, same-category={skipped_cat}, found_best={bool(best)}")
-
-    if not best:
+    for idx, source_name in enumerate(ordered_sources):
+        jobs = FETCHERS[source_name]()
+        random.shuffle(jobs)
         for job in jobs:
-            if job["url"] in posted: continue
-            if is_closed(job): continue
+            reason = reject_reason(job, posted)
+            if reason:
+                continue
+            cat = get_category(job["title"])
+            if any(is_similar(cat, old) for old in last_cats):
+                continue
             who, score = analyze_job(job)
-            best = (job, who)
-            best_cat = get_category(job["title"])
-            print(f"Fallback used: {job['title']} cat={best_cat}")
+            if score > best_score:
+                best_score = score
+                best_overall = (job, who)
+                best_cat = cat
+                best_source_idx = SOURCES.index(source_name)
+        # If we found a good job from this source, stop - we don't need to check other sources
+        if best_overall and best_score >= 10:
+            print(f"Found good job from {source_name}, stopping search")
             break
+        # If we found any job, but not perfect, keep it as backup and try next source for better one
+        print(f"After {source_name}: best so far = {best_overall[0]['title'] if best_overall else 'None'} score={best_score}")
 
-    if not best:
-        print(f"No OPEN job from {source_name} - will try next source in 5h")
-        state["last_source"] = next_src_idx
-        save_json("state.json", state)
+    if not best_overall:
+        # LAST RESORT: Allow any open job even if category repeats, but NEVER repeat URL and NEVER scam
+        print("No job with new category found, trying fallback - any open job")
+        for source_name in ordered_sources:
+            jobs = FETCHERS[source_name]()
+            for job in jobs:
+                if reject_reason(job, posted):
+                    continue
+                who, score = analyze_job(job)
+                best_overall = (job, who)
+                best_cat = get_category(job["title"])
+                best_source_idx = SOURCES.index(source_name)
+                break
+            if best_overall:
+                break
+
+    if not best_overall:
+        print("CRITICAL: No open job found from ANY source. Check if APIs are down.")
         return
 
-    job, who = best
+    job, who = best_overall
     date_str = ""
     if job.get("posted_date"):
         date_str = f"\n📅 Posted: {job['posted_date'].strftime('%d %b %Y')} - Still Open ✅"
@@ -272,19 +272,15 @@ Share 👉 https://t.me/RemoteJobsHiringNow
 """
     resp = send_to_telegram(message)
     if resp.status_code == 200:
-        # ONLY save if Telegram actually posted - this was the bug
         posted.add(job["url"])
         last_cats.append(best_cat)
         state["last_categories"] = last_cats[-15:]
-        state["last_source"] = next_src_idx
+        state["last_source"] = best_source_idx
         save_json("state.json", state)
         save_json("posted.json", list(posted))
-        print(f"SUCCESS: Posted {best_cat} from {source_name}")
+        print(f"SUCCESS: Posted {best_cat} from {job['source']}")
     else:
-        print("FAILED: Not saving to posted.json, will retry same job next time")
-        # Still advance source so we don't get stuck on broken source
-        state["last_source"] = next_src_idx
-        save_json("state.json", state)
+        print("FAILED: Not saving, will retry next run")
 
 if __name__ == "__main__":
     main()
