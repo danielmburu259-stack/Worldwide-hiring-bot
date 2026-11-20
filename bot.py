@@ -10,6 +10,7 @@
 #    BLOCKED: Engineer, Developer, Doctor, Lawyer, Accountant, etc.
 # 4. NEVER post tag soup. Tags are not a description.
 # 5. Salary: show period ONLY if job itself says it (per year / per month / per week / per hour). Never invent.
+#    Title pay ($70) is real pay - show it even if < $100. Description noise ($3 million) is not.
 # 6. Worldwide: company can be in US/UK/EU, but job scope must NOT be US/UK/EU-only (e.g. US Oncology, UK Sales).
 import os, json, requests, html, random, re, sys, hashlib
 from datetime import datetime, timezone
@@ -204,6 +205,7 @@ def clean_title_company(title, company, url):
 # Professional rule: return salary exactly as job states it, plus its period if job states it.
 # Never invent a period. If job says "$50,000" with no period, return "$50,000".
 # NEW: $3 alone is NOT a salary (it is "$3 million revenue" etc. in the description). Throw it away.
+# BUT: $70 in the TITLE is real pay ("Paid Task ($70)") - title pay is never thrown away.
 def _find_period(text):
     if not text:
         return ""
@@ -260,7 +262,22 @@ def _is_tiny_salary(salary_part, period):
     except:
         return False
     # A real salary without period is at least $100 (e.g. $500 project). Below that, it is noise.
+    # NOTE: This guard is ONLY for description / API salary. Title pay is handled separately and never goes through here.
     return val < 100
+
+def extract_salary_from_title(title):
+    # Title pay is real: "Paid Task ($70)", "Writer - $50", "Design - $85 - $100"
+    # Return it as-is, even if < $100. Never invent a period.
+    if not title:
+        return ""
+    m = re.search(r"\$\s?[\d,]+(?:\s?[-–]\s?\$?\s?[\d,]+)?", title, flags=re.I)
+    if not m:
+        return ""
+    salary_part = m.group(0).strip()
+    period = _find_period(title)
+    if period:
+        return f"{salary_part} {period}"
+    return salary_part
 
 def extract_salary(desc):
     if not desc:
@@ -640,9 +657,13 @@ def main():
         date_str = f"\n📅 Posted: {job['posted_date'].strftime('%d %b %Y')}"
     else:
         date_str = "\n📅 Posted: Recently"
-    # Salary: ONLY CHANGE HERE in main() - attach period if API salary has none, using job's own description
+    # Salary: ONLY CHANGED HERE in main() - title pay first, then API / description
+    # Order: 1) Title pay ($70) - always real, never tiny-guarded. 2) API salary. 3) Description salary.
     salary_raw = (job.get("salary") or "").strip()
-    if salary_raw:
+    title_salary = extract_salary_from_title(job.get("title", ""))
+    if title_salary:
+        salary = title_salary
+    elif salary_raw:
         if _has_period(salary_raw):
             salary = salary_raw
         else:
@@ -650,8 +671,8 @@ def main():
             salary = f"{salary_raw} {period}" if period else salary_raw
     else:
         salary = extract_salary(job.get("desc", ""))
-    # NEW: Tiny API salary guard - same rule as extract_salary. "$3" from API is also noise.
-    if salary and _is_tiny_salary(salary.split(" per ")[0] if " per " in salary else salary, _find_period(salary)):
+    # Tiny guard ONLY for API / description salary, NEVER for title salary.
+    if not title_salary and salary and _is_tiny_salary(salary.split(" per ")[0] if " per " in salary else salary, _find_period(salary)):
         salary = ""
     salary_line = f"\n💰 Salary: {html.escape(salary)}" if salary else "\n💰 Salary: Not listed"
     job_type = extract_job_type(job.get("desc", ""), job.get("title", ""))
