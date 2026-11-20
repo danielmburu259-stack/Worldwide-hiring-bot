@@ -175,10 +175,8 @@ def extract_snippet(desc):
         low = s.lower()
         if any(w in low for w in skip_words):
             continue
-        # FIXED: Skip short fluff like "Thatch is changing that."
         if len(s.strip()) < 45:
             continue
-        # FIXED: Must sound like a real job duty, not marketing
         if not any(w in low for w in ["you will", "responsib", "design", "work", "create", "build", "help", "join", "looking for", "we need", "role", "experience", "skill"]):
             continue
         sentence = s.strip()
@@ -394,6 +392,7 @@ def main():
     if job["title"].strip().lower() == state.get("last_title", "").strip().lower():
         print("SKIP: Same title as last post")
         return
+    # REVERTED: Like big platforms - if no exact date, say Recently, don't skip the job
     date_str = ""
     if job.get("posted_date"):
         date_str = f"\n📅 Posted: {job['posted_date'].strftime('%d %b %Y')}"
