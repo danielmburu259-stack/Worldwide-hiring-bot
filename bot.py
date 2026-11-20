@@ -331,15 +331,38 @@ def is_worldwide(job):
         return True
     return False
 
-# --- ONLY NEW FUNCTION IN THIS FILE: get_location_label - FULLY GENERIC, NO COUNTRY LIST ---
+# --- ONLY CHANGED FUNCTION HERE: get_location_label - generic + USA/UK fix for lists ---
 # Say what the source platform says. Never invent Worldwide.
 # USA / Philippines were only examples. This works for ANY place.
-# Returns (location_line, eligibility_line) for the Telegram message.
-#   location="Worldwide" -> ("Worldwide", "Worldwide - All Can Apply ✅")
-#   location="Germany" -> ("Only Germany", "Only Germany Can Apply")
-#   location="Kenya" -> ("Only Kenya", "Only Kenya Can Apply")
-#   location="Brazil" -> ("Only Brazil", "Only Brazil Can Apply")
-#   location="Remote" + no region info -> ("Remote", "Check Apply link for who can apply")
+# FIX: "USA, Canada" must stay "USA, Canada", not "Usa, Canada".
+# We split on comma / " and " and fix each part separately, then re-join.
+def _format_place_list(raw):
+    # Split "USA, Canada" -> ["USA", "Canada"], "USA and Canada" -> ["USA", "Canada"]
+    # Keep the original separator for display: comma stays comma, " and " stays " and ".
+    parts = re.split(r"(\s*,\s*|\s+and\s+)", raw.strip())
+    out = []
+    for p in parts:
+        low = p.strip().lower()
+        if low in ("", ",", "and"):
+            out.append(p)
+            continue
+        if low in ("usa", "us", "u.s.", "u.s.a.", "united states"):
+            out.append("USA")
+        elif low in ("uk", "u.k.", "united kingdom"):
+            out.append("UK")
+        elif low in ("uae",):
+            out.append("UAE")
+        elif low in ("eu", "e.u."):
+            out.append("EU")
+        else:
+            out.append(p.strip().title())
+    # Re-join and clean double spaces
+    joined = "".join(out)
+    joined = re.sub(r"\s+", " ", joined).strip()
+    # Fix spacing around commas: "USA , Canada" -> "USA, Canada"
+    joined = re.sub(r"\s*,\s*", ", ", joined)
+    return joined
+
 def get_location_label(job):
     loc = (job.get("location") or "").strip()
     loc_low = loc.lower()
@@ -351,33 +374,17 @@ def get_location_label(job):
     # No country list. Whatever source wrote, we repeat it.
     # Skip only the non-place values: blank, "Remote", "Remote - Worldwide".
     if loc and loc_low not in ("", "remote", "remote - worldwide"):
-        place = loc.strip()
-        # Tidy display only, meaning unchanged.
-        low_place = place.lower()
-        if low_place in ("usa", "us", "u.s.", "u.s.a.", "united states"):
-            place = "US"
-        elif low_place in ("uk", "u.k.", "united kingdom"):
-            place = "UK"
-        elif low_place in ("uae",):
-            place = "UAE"
-        else:
-            # Title-case for display: "philippines" -> "Philippines", "south africa" -> "South Africa"
-            place = place.title()
+        place = _format_place_list(loc)
         return (f"Only {place}", f"Only {place} Can Apply")
     # 3. Location is just "Remote" but description clearly says "<Place> only" -> use that place.
     # Generic: any 1-2 word place, not a hard-coded country list.
-    # Reject generic words so we never pick up "candidates only" / "remote only" etc.
     stopwords = {"candidates", "applicants", "remote", "online", "fully", "all", "those", "this", "that", "eligible", "qualified", "based", "located", "residing"}
     m = re.search(r"\b([a-z]+(?:\s+[a-z]+)?)\s+only\b", desc_text)
     if m:
         place_raw = m.group(1).strip()
         words = place_raw.split()
         if 1 <= len(words) <= 2 and all(w not in stopwords for w in words) and len(place_raw) <= 30:
-            place = place_raw.title()
-            if place.lower() in ("usa", "us", "united states"):
-                place = "US"
-            elif place.lower() in ("uk", "united kingdom"):
-                place = "UK"
+            place = _format_place_list(place_raw)
             return (f"Only {place}", f"Only {place} Can Apply")
     # 4. Source only says Remote / blank -> say Remote, do NOT invent Worldwide.
     return ("Remote", "Check Apply link for who can apply")
@@ -596,6 +603,26 @@ def main():
     location_label, eligibility_label = get_location_label(job)
     location_line = f"\n📍 {html.escape(location_label)}"
     message = f"""🌍 <b>REMOTE JOB - {cat}</b>{date_str}\n\n📌 <b>{html.escape(job['title'])}</b>\n🏢 {html.escape(job['company'] or 'Company')}{location_line}{salary_line}{type_line}{snippet_line}\n\n🌍 {html.escape(eligibility_label)}\n\n👉 <b>Apply Here:</b> {job['url']}\n\n⚠️ Never pay to apply for a job.\n\n📣 Share with a friend who needs a job 👉 {SHARE_LINK}\n"""
+    # --- ONLY NEW CHECK HERE: duplicate guard RIGHT before sending ---
+    # Fixes double-send when bot runs twice at the same time (e.g. on deploy).
+    # Re-load fresh posted.json + channel. If this job appeared in between, skip.
+    try:
+        fresh_posted = load_json("posted.json", [])
+        fresh_urls = set()
+        fresh_ids = set()
+        for item in fresh_posted:
+            if isinstance(item, dict):
+                fresh_urls.add(norm_url(item.get("url", "")))
+                fresh_ids.add(item.get("id", ""))
+            else:
+                fresh_urls.add(norm_url(item))
+        fresh_channel_urls, fresh_channel_titles = fetch_channel_posted_urls()
+        fresh_urls = fresh_urls.union(fresh_channel_urls)
+        if norm_url(job["url"]) in fresh_urls or make_id(job) in fresh_ids or job["title"].strip().lower() in fresh_channel_titles:
+            print("SKIP: Duplicate detected just before send - already posted by another run")
+            return
+    except Exception as e:
+        print(f"Pre-send duplicate check error (will still try to send once): {e}")
     resp = send_to_telegram(message)
     if resp.status_code == 200:
         posted_data.append({"url": job["url"], "id": make_id(job), "title": job["title"], "date": today, "category": cat, "source": source_name})
