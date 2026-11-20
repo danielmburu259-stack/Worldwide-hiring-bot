@@ -1,4 +1,10 @@
-# RemoteJobsHiringNow - FINAL - Better sources first, Backup if empty, Strict Worldwide check
+# RemoteJobsHiringNow - FINAL - Reviewed
+# Rules:
+# 1. Fully Remote + Worldwide ONLY - checks Description, not just Location
+# 2. Better sources first (RemoteOK, Remotive), Backup only if empty
+# 3. Freelancer = skill-based, NOT engineering/professional degree jobs
+#    ALLOWED: Representative, Manager, Senior, Executive, Lead - if remote + worldwide
+#    BLOCKED: Engineer, Developer, Doctor, Lawyer, Accountant, etc.
 import os, json, requests, html, random, re, sys, hashlib
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
@@ -34,17 +40,17 @@ CAT_KEYWORDS = {
     "Video Editing": ["video edit", "video editor", "video editing", "youtube editor", "reels editor"],
 }
 
+# FINAL: Only truly professional / degree jobs blocked.
+# DO NOT block: representative, manager, senior, lead, executive, director, supervisor - allowed if remote + worldwide
 BLOCKED_IN_TITLE = [
     "engineer", "engineering", "developer", "devops", "software", "backend", "frontend",
-    "data scientist", "machine learning", "architect", "cto", "principal",
-    "staff", "java", "python", "react", "node", "kubernetes",
+    "data scientist", "machine learning", "architect", "cto",
+    "java", "python", "react", "node", "kubernetes",
     "cybersecurity", "security", "blockchain", "quant", "phd", "research scientist",
-    "product manager", "engineering manager", "director", "vp ", "head of",
     "medical", "doctor", "nurse", "lawyer", "attorney", "accountant", "accounting",
     "mechanical", "electrical", "civil", "chemical", "aerospace",
     "graduate", "internship", "intern", "2027", "2028", "apprentice",
-    "senior", "lead", "manager", "supervisor",
-    "underwriting", "underwriter", "insurance", "finance", "banking", "bank", "loan", "mortgage", "consultant", "field",
+    "underwriting", "underwriter", "insurance", "finance", "banking", "bank", "loan", "mortgage", "field",
     "steuerberatung", "steuer", "m/w/d",
 ]
 
@@ -52,7 +58,7 @@ BLOCKED_IN_DESC = ["pay to apply", "pay fee", "training fee", "activation fee", 
 
 NON_WORLDWIDE = ["(eu)", "europe", "germany", "berlin", "france", "netherlands", "spain", "switzerland", "swiss", "zurich", "austria", "belgium", "(uk)", "united kingdom", "london", "england", " uk", "(us)", "united states", "usa", "america", "new york", "california", "texas", " us", "canada", "australia", "india", "philippines", "nigeria", "kenya", "south africa"]
 
-# FIXED WORLDWIDE: Phrases in DESCRIPTION that prove job is NOT worldwide, even if Location says Remote
+# WORLDWIDE: Phrases in DESCRIPTION that prove job is NOT worldwide, even if Location says Remote
 RESTRICTED_IN_DESC = [
     r"\bus and european\b", r"\bus & european\b", r"\b us and europe\b", r"\busa and europe\b",
     r"\bunited states and europe\b", r"\bnorth america\b", r"\bnorth america only\b",
@@ -65,7 +71,7 @@ RESTRICTED_IN_DESC = [
     r"\bus market", r"\beuropean market", r"\bus clients", r"\beuropean clients",
 ]
 
-# FIXED SOURCES: Better sources first (real salary + real location), others ONLY as backup
+# SOURCES: Better sources first (real salary + real location), others ONLY as backup
 BETTER_SOURCES = ["remoteok", "remotive"]
 BACKUP_SOURCES = ["arbeitnow", "wwr_all", "wwr_design", "jobicy", "remote_co", "himalayas"]
 SOURCES = BETTER_SOURCES + BACKUP_SOURCES
@@ -234,7 +240,7 @@ def is_english(title, desc):
     return True
 
 def is_worldwide(job):
-    # FIXED: Check Location + Title + Description, not just Location
+    # Check Location + Title + Description, not just Location
     loc = (job.get("location") or "").lower()
     for bad in NON_WORLDWIDE:
         if bad in loc:
@@ -422,7 +428,7 @@ def main():
     last_cats = state.get("last_categories", [])
     last_cat = last_cats[-1] if last_cats else ""
     last_source_name = state.get("last_source_name", "")
-    # FIXED ORDER: Better sources first, rotate to avoid same source twice in a row
+    # ORDER: Better sources first, rotate to avoid same source twice in a row
     better_ordered = [s for s in BETTER_SOURCES if s != last_source_name] + [s for s in BETTER_SOURCES if s == last_source_name]
     backup_ordered = [s for s in BACKUP_SOURCES if s != last_source_name]
     print(f"TIER 1 - Better sources: {better_ordered}")
