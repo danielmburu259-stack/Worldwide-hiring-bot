@@ -1,10 +1,11 @@
-# RemoteJobsHiringNow - FINAL - Reviewed
+# RemoteJobsHiringNow - FINAL v2 - Checked 3 times
 # Rules:
 # 1. Fully Remote + Worldwide ONLY - checks Description, not just Location
 # 2. Better sources first (RemoteOK, Remotive), Backup only if empty
 # 3. Freelancer = skill-based, NOT engineering/professional degree jobs
 #    ALLOWED: Representative, Manager, Senior, Executive, Lead - if remote + worldwide
 #    BLOCKED: Engineer, Developer, Doctor, Lawyer, Accountant, etc.
+# 4. NEVER post tag soup. Tags are not a description.
 import os, json, requests, html, random, re, sys, hashlib
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
@@ -40,8 +41,8 @@ CAT_KEYWORDS = {
     "Video Editing": ["video edit", "video editor", "video editing", "youtube editor", "reels editor"],
 }
 
-# FINAL: Only truly professional / degree jobs blocked.
-# DO NOT block: representative, manager, senior, lead, executive, director, supervisor - allowed if remote + worldwide
+# Only truly professional / degree jobs blocked.
+# ALLOWED: representative, manager, senior, lead, executive, director, supervisor
 BLOCKED_IN_TITLE = [
     "engineer", "engineering", "developer", "devops", "software", "backend", "frontend",
     "data scientist", "machine learning", "architect", "cto",
@@ -58,7 +59,6 @@ BLOCKED_IN_DESC = ["pay to apply", "pay fee", "training fee", "activation fee", 
 
 NON_WORLDWIDE = ["(eu)", "europe", "germany", "berlin", "france", "netherlands", "spain", "switzerland", "swiss", "zurich", "austria", "belgium", "(uk)", "united kingdom", "london", "england", " uk", "(us)", "united states", "usa", "america", "new york", "california", "texas", " us", "canada", "australia", "india", "philippines", "nigeria", "kenya", "south africa"]
 
-# WORLDWIDE: Phrases in DESCRIPTION that prove job is NOT worldwide, even if Location says Remote
 RESTRICTED_IN_DESC = [
     r"\bus and european\b", r"\bus & european\b", r"\b us and europe\b", r"\busa and europe\b",
     r"\bunited states and europe\b", r"\bnorth america\b", r"\bnorth america only\b",
@@ -71,7 +71,6 @@ RESTRICTED_IN_DESC = [
     r"\bus market", r"\beuropean market", r"\bus clients", r"\beuropean clients",
 ]
 
-# SOURCES: Better sources first (real salary + real location), others ONLY as backup
 BETTER_SOURCES = ["remoteok", "remotive"]
 BACKUP_SOURCES = ["arbeitnow", "wwr_all", "wwr_design", "jobicy", "remote_co", "himalayas"]
 SOURCES = BETTER_SOURCES + BACKUP_SOURCES
@@ -183,12 +182,35 @@ def extract_job_type(desc, title):
         return "Temporary"
     return ""
 
+def is_tag_soup(text):
+    # Tag soup = long list of keywords, no real sentence, no verb, no period
+    # Example: "product manager exec salesforce hr education consulting technical..."
+    if not text:
+        return True
+    t = text.strip()
+    if len(t) < 20:
+        return True
+    # If no period in first 400 chars and many words, it's tags
+    if "." not in t[:400] and len(t.split()) > 20:
+        return True
+    # If sentence has >18 words and no verb-like words, it's tags
+    words = t.split()
+    if len(words) > 18:
+        low = " " + t.lower() + " "
+        verb_markers = [" you ", " will ", " your ", " role ", " responsible ", " join ", " help ", " work ", " looking ", " need ", " create ", " write ", " manage ", " support ", " is ", " are ", " the "]
+        if not any(v in low for v in verb_markers):
+            return True
+    return False
+
 def extract_snippet(desc, title="", company=""):
     clean = ""
     if desc:
         clean = html.unescape(desc)
         clean = re.sub(r"<[^>]+>", " ", clean)
         clean = re.sub(r"\s+", " ", clean).strip()
+        # FIXED: If whole desc is tag soup, treat as empty -> clean fallback
+        if is_tag_soup(clean) and len(clean.split()) > 20 and "." not in clean[:500]:
+            clean = ""
     if len(clean) >= 20:
         skip_words = ["headquarters", "only initiates contact", "official email", "equal opportunity", "about us", "about tebra", "about the company", "we are an", "we're hiring", "location:", "remote:", "job type", "headquarters:", "united states -", "check link", "we help companies", "we provide", "we offer", "our mission", "our platform", "we are changing", "we are building", "we are on a mission"]
         sentences = clean.split(". ")
@@ -200,6 +222,9 @@ def extract_snippet(desc, title="", company=""):
                 continue
             if len(s.strip()) < 45:
                 continue
+            # FIXED: Skip any single sentence that is tag soup
+            if is_tag_soup(s) and len(s.split()) > 15:
+                continue
             if any(w in low for w in role_words):
                 sentence = s.strip()
                 break
@@ -209,6 +234,8 @@ def extract_snippet(desc, title="", company=""):
                 if any(w in low for w in skip_words):
                     continue
                 if len(s.strip()) < 45:
+                    continue
+                if is_tag_soup(s) and len(s.split()) > 15:
                     continue
                 if not any(w in low for w in ["design", "work", "create", "build", "help", "join", "looking for", "we need", "role", "experience", "skill", "write", "support", "manage"]):
                     continue
@@ -240,12 +267,10 @@ def is_english(title, desc):
     return True
 
 def is_worldwide(job):
-    # Check Location + Title + Description, not just Location
     loc = (job.get("location") or "").lower()
     for bad in NON_WORLDWIDE:
         if bad in loc:
             return False
-    # If description proves it's US/EU only, it's NOT worldwide - even if Location says Remote
     desc_text = ((job.get("title") or "") + " " + (job.get("desc") or "")).lower()
     for pat in RESTRICTED_IN_DESC:
         if re.search(pat, desc_text):
@@ -264,7 +289,8 @@ def fetch_remoteok():
             if not isinstance(j, dict) or not j.get("position"):
                 continue
             title, company = clean_title_company(j.get("position"), j.get("company"), j.get("url"))
-            out.append({"title": title, "company": company, "url": j.get("url"), "location": j.get("location", "Remote"), "desc": " ".join(j.get("tags", [])) + " " + str(j.get("description", ""))[:1200], "salary": f"${j.get('salary_min','')} - ${j.get('salary_max','')}" if j.get("salary_min") else "", "source": "RemoteOK", "posted_date": parse_date(j.get("date"))})
+            # FIXED: ONLY real description. NEVER add tags to desc. Tags caused Maya HTT tag soup.
+            out.append({"title": title, "company": company, "url": j.get("url"), "location": j.get("location", "Remote"), "desc": str(j.get("description", ""))[:1500], "salary": f"${j.get('salary_min','')} - ${j.get('salary_max','')}" if j.get("salary_min") else "", "source": "RemoteOK", "posted_date": parse_date(j.get("date"))})
         print(f"RemoteOK {len(out)}")
         return out
     except Exception as e:
@@ -277,7 +303,7 @@ def fetch_remotive():
         out = []
         for j in r.json().get("jobs", []):
             title, company = clean_title_company(j.get("title"), j.get("company_name"), j.get("url"))
-            out.append({"title": title, "company": company, "url": j.get("url"), "location": j.get("candidate_required_location", "Remote"), "desc": j.get("description", "")[:1200], "salary": j.get("salary") or "", "source": "Remotive", "posted_date": parse_date(j.get("publication_date"))})
+            out.append({"title": title, "company": company, "url": j.get("url"), "location": j.get("candidate_required_location", "Remote"), "desc": j.get("description", "")[:1500], "salary": j.get("salary") or "", "source": "Remotive", "posted_date": parse_date(j.get("publication_date"))})
         print(f"Remotive {len(out)}")
         return out
     except Exception as e:
@@ -290,7 +316,7 @@ def fetch_arbeitnow():
         out = []
         for j in r.json().get("data", []):
             title, company = clean_title_company(j.get("title"), j.get("company_name"), j.get("url"))
-            out.append({"title": title, "company": company, "url": j.get("url"), "location": j.get("location") or "Remote", "desc": j.get("description", "")[:1200], "salary": "", "source": "Arbeitnow", "posted_date": parse_date(j.get("created_at"))})
+            out.append({"title": title, "company": company, "url": j.get("url"), "location": j.get("location") or "Remote", "desc": j.get("description", "")[:1500], "salary": "", "source": "Arbeitnow", "posted_date": parse_date(j.get("created_at"))})
         print(f"Arbeitnow {len(out)}")
         return out
     except Exception as e:
@@ -305,7 +331,7 @@ def fetch_rss(url, source_name):
         for item in root.findall(".//item")[:50]:
             title_raw = item.findtext("title") or ""
             link = item.findtext("link") or ""
-            desc = re.sub("<[^>]+>", " ", item.findtext("description") or "")[:1200]
+            desc = re.sub("<[^>]+>", " ", item.findtext("description") or "")[:1500]
             pub = item.findtext("pubDate") or ""
             title, company = clean_title_company(title_raw, source_name, link)
             out.append({"title": title, "company": company, "url": link, "location": "Remote", "desc": desc, "salary": "", "source": source_name, "posted_date": parse_date(pub)})
@@ -368,7 +394,6 @@ def pick_best(candidates, last_cat):
     return candidates_sorted[0] if candidates_sorted else None
 
 def collect_candidates(source_list, posted_urls, posted_ids, channel_titles, last_cat):
-    # Helper: collect from one tier only (Better OR Backup), fresh 2 days first, then 7 days
     candidates = []
     for source_name in source_list:
         jobs = FETCHERS[source_name]()
@@ -386,7 +411,6 @@ def collect_candidates(source_list, posted_urls, posted_ids, channel_titles, las
             break
     if candidates:
         return candidates
-    # Same tier, backup age 7 days
     candidates = []
     for source_name in source_list:
         jobs = FETCHERS[source_name]()
@@ -428,7 +452,6 @@ def main():
     last_cats = state.get("last_categories", [])
     last_cat = last_cats[-1] if last_cats else ""
     last_source_name = state.get("last_source_name", "")
-    # ORDER: Better sources first, rotate to avoid same source twice in a row
     better_ordered = [s for s in BETTER_SOURCES if s != last_source_name] + [s for s in BETTER_SOURCES if s == last_source_name]
     backup_ordered = [s for s in BACKUP_SOURCES if s != last_source_name]
     print(f"TIER 1 - Better sources: {better_ordered}")
